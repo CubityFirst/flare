@@ -1,0 +1,10 @@
+# Copy to .dev.vars for local development. Only secrets declared with
+# bindings.secret() in cloudflare.config.ts are read from this file.
+
+# Signs the short-lived OIDC login cookie. Any long random string.
+SESSION_SECRET=
+# Web Push key pair. Generate with: npm run vapid
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+# Only if you uncomment OIDC_CLIENT_SECRET in cloudflare.config.ts:
+# OIDC_CLIENT_SECRET=
