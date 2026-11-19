@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
 			compatibilityDate: "2026-11-01",
 			compatibilityFlags: ["nodejs_compat"],
 			entrypoint,
-			observability: { enabled: true },
+			observability: { enabled: false },
 
 			// The SPA is served from static assets. API, auth and the Pushover-compatible endpoint
 			// run in the Worker first; everything else falls back to index.html.
