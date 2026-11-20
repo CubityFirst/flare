@@ -9,6 +9,7 @@ import * as entrypoint from "./worker/index.ts" with { type: "cf-worker" };
  * Locally, only *secret* bindings read from `.dev.vars`; text values come from here.
  *
  * Secrets (production: `cf` secrets for the Worker; local: `.dev.vars`):
+ *   OIDC_CLIENT_SECRET  the OIDC client secret, from `node scripts/oidc-client.mjs register`
  *   SESSION_SECRET      signs the short-lived OIDC login cookie
  *   VAPID_PUBLIC_KEY    Web Push key pair, from `npm run vapid`. The public half isn't
  *   VAPID_PRIVATE_KEY   sensitive, but storing both as secrets keeps each environment's pair together.
@@ -44,32 +45,28 @@ export default defineConfig(({ mode }) => {
 				APP_URL: bindings.text(dev ? "http://localhost:5173" : "https://flare.cubityfir.st"),
 				APP_NAME: bindings.text("Flare"),
 
-				// OIDC provider. The issuer must serve /.well-known/openid-configuration.
-				// While these are empty, `cf dev` falls back to the local dev sign-in. To test real
-				// OIDC locally, also register http://localhost:5173/auth/callback with the provider.
-				OIDC_ISSUER: bindings.text(""),
-				OIDC_CLIENT_ID: bindings.text(""),
-				OIDC_SCOPES: bindings.text("openid email profile"),
-				// Only for confidential clients; public (PKCE-only) clients don't need it.
-				// OIDC_CLIENT_SECRET: bindings.secret(),
+				// Sign in with cubityfir.st (OIDC, authorization code + PKCE). Configured from the
+				// issuer's discovery document. The client is registered with
+				// scripts/oidc-client.mjs, which also lists the exact callback URLs.
+				OIDC_ISSUER: bindings.text("https://auth.cubityfir.st"),
+				OIDC_CLIENT_ID: bindings.text("oidc_b411d778a004b3f1bb4a5989"),
+				OIDC_SCOPES: bindings.text("openid profile email roles"),
+				// Confidential client. Without it in .dev.vars, `cf dev` uses the dev sign-in instead.
+				OIDC_CLIENT_SECRET: bindings.secret(),
+				// The provider's Worker, in the same account and zone. Server-side OIDC requests
+				// (discovery, JWKS, token) go through this binding instead of the public URL.
+				// Not under `cf dev`, where that Worker isn't running: there they use the public URL.
+				...(dev ? {} : { OIDC: bindings.worker({ worker: "cubityfirst-auth" }) }),
 
-				// Optional: auto-approve users whose ID token has this claim containing this value
-				// (e.g. "groups" / "flare"). Otherwise an admin approves each new user.
+				// Admin rights come from the provider's `roles` claim ("admin"). Other users wait for
+				// an admin's approval, unless their ID token has this claim containing this value
+				// (e.g. "roles" / "user" approves everyone the provider knows).
 				OIDC_ACCESS_CLAIM: bindings.text(""),
 				OIDC_ACCESS_VALUE: bindings.text(""),
-				// Comma-separated emails that become admins (and are auto-approved) on sign-in.
-				// The first one is also the identity used by the temporary password sign-in.
-				// A secret in production so the public repo carries no personal email.
-				ADMIN_EMAILS: dev ? bindings.text("dev@example.com") : bindings.secret(),
 
-				// Local dev sign-in at /auth/dev-login. Only ever on under `cf dev`, and the
-				// Worker additionally refuses it on anything but localhost.
+				// Local dev sign-in at /auth/dev-login, used when OIDC isn't configured. Only ever
+				// on under `cf dev`, and the Worker additionally refuses it on anything but localhost.
 				DEV_AUTH: bindings.text(dev ? "true" : "false"),
-
-				// Production only, until the OIDC provider is ready: a long random password for
-				// /auth/password, which signs in as the first ADMIN_EMAILS address. It's ignored
-				// once OIDC_ISSUER/OIDC_CLIENT_ID are set; remove this line then.
-				...(dev ? {} : { ADMIN_LOGIN_PASSWORD: bindings.secret() }),
 
 				SESSION_SECRET: bindings.secret(),
 				VAPID_PUBLIC_KEY: bindings.secret(),

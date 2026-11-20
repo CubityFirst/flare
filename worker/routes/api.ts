@@ -18,7 +18,6 @@ import { z } from "zod";
 import { type AppEnv, type AppRow, type Ctx, fail, jsonBody, parse, type UserRow } from "../lib/context";
 import { randomId, sha256Hex } from "../lib/encoding";
 import { oidcConfigured } from "../lib/oidc";
-import { passwordLoginAllowed } from "./auth";
 import { acknowledgeReceipt, type ReceiptRow, toReceipt } from "../lib/receipts";
 import { sendMessage } from "../lib/send";
 import { loadSessionUser } from "../lib/session";
@@ -33,7 +32,8 @@ api.get("/config", (c) =>
     appName: c.env.APP_NAME,
     oidc: oidcConfigured(c.env),
     devAuth: c.env.DEV_AUTH === "true" && ["localhost", "127.0.0.1"].includes(new URL(c.req.url).hostname),
-    passwordLogin: passwordLoginAllowed(c.env),
+    // Shown on the sign-in button, e.g. "auth.cubityfir.st".
+    provider: c.env.OIDC_ISSUER ? new URL(c.env.OIDC_ISSUER).host : null,
   }),
 );
 
@@ -853,18 +853,13 @@ api.get("/admin/users", async (c) => {
 
 api.patch("/admin/users/:id", async (c) => {
   requireAdmin(c);
-  const input = parse(
-    z.object({ role: z.enum(["user", "admin"]).optional(), status: z.enum(["pending", "active", "disabled"]).optional() }),
-    await jsonBody(c),
-  );
+  // Roles come from the identity provider's `roles` claim at each sign-in, so only the
+  // approval status is managed here.
+  const input = parse(z.object({ status: z.enum(["pending", "active", "disabled"]) }), await jsonBody(c));
   const id = c.req.param("id");
-  if (id === c.get("user").id && (input.role === "user" || (input.status && input.status !== "active"))) {
-    fail(400, "You can't demote or disable yourself");
-  }
-  const row = await c.env.DB.prepare(
-    "UPDATE users SET role = COALESCE(?, role), status = COALESCE(?, status) WHERE id = ? RETURNING *",
-  )
-    .bind(input.role ?? null, input.status ?? null, id)
+  if (id === c.get("user").id && input.status !== "active") fail(400, "You can't disable yourself");
+  const row = await c.env.DB.prepare("UPDATE users SET status = ? WHERE id = ? RETURNING *")
+    .bind(input.status, id)
     .first<UserRow>();
   if (!row) fail(404, "User not found");
   if (row.status === "disabled") {

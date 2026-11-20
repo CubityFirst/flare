@@ -11,3 +11,5 @@ dist
 .cloudflare
 # Production secrets for `cf deploy --secrets-file`
 .prod.secrets
+# OIDC client credentials and registration token (scripts/oidc-client.mjs)
+.oidc.secrets

@@ -10,13 +10,21 @@ function secure(c: Ctx) {
   return new URL(c.req.url).protocol === "https:";
 }
 
-export async function createSession(c: Ctx, userId: string) {
+/** `idToken` is kept only to send as `id_token_hint` when the user signs out. */
+export async function createSession(c: Ctx, userId: string, idToken: string | null = null) {
   const token = b64urlEncode(randomBytes(32));
   const now = Date.now();
   await c.env.DB.prepare(
-    "INSERT INTO sessions (id, user_id, created_at, expires_at, user_agent) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO sessions (id, user_id, created_at, expires_at, user_agent, id_token) VALUES (?, ?, ?, ?, ?, ?)",
   )
-    .bind(await sha256Hex(token), userId, now, now + SESSION_TTL, c.req.header("user-agent")?.slice(0, 300) ?? null)
+    .bind(
+      await sha256Hex(token),
+      userId,
+      now,
+      now + SESSION_TTL,
+      c.req.header("user-agent")?.slice(0, 300) ?? null,
+      idToken,
+    )
     .run();
   setCookie(c, SESSION_COOKIE, token, {
     httpOnly: true,
@@ -57,8 +65,13 @@ export async function loadSessionUser(c: Ctx): Promise<UserRow | null> {
   return user;
 }
 
-export async function destroySession(c: Ctx) {
+/** Ends the current session and returns its ID token (for the provider's logout), if any. */
+export async function destroySession(c: Ctx): Promise<string | null> {
   const token = getCookie(c, SESSION_COOKIE);
-  if (token) await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(await sha256Hex(token)).run();
   deleteCookie(c, SESSION_COOKIE, { path: "/", secure: secure(c) });
+  if (!token) return null;
+  const row = await c.env.DB.prepare("DELETE FROM sessions WHERE id = ? RETURNING id_token")
+    .bind(await sha256Hex(token))
+    .first<{ id_token: string | null }>();
+  return row?.id_token ?? null;
 }

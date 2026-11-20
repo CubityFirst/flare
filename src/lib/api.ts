@@ -47,7 +47,7 @@ export interface PublicConfig {
   appName: string;
   oidc: boolean;
   devAuth: boolean;
-  passwordLogin: boolean;
+  provider: string | null;
 }
 
 export type AdminUser = User & { deviceCount: number; appCount: number };
@@ -111,7 +111,7 @@ export const api = {
   deleteSound: (id: string) => del(`/api/sounds/${id}`),
 
   adminUsers: () => get<AdminUser[]>("/api/admin/users"),
-  updateUser: (id: string, body: { role?: User["role"]; status?: User["status"] }) =>
+  updateUser: (id: string, body: { status: User["status"] }) =>
     patch<User>(`/api/admin/users/${id}`, body),
 };
 

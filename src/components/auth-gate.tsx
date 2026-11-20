@@ -31,16 +31,14 @@ function LoginScreen() {
       </div>
       <Button size="lg" asChild>
         <a href={`/auth/login?returnTo=${returnTo}`}>
-          <LogIn /> Sign in
+          <LogIn /> {config.data?.oidc && config.data.provider ? `Sign in with ${config.data.provider.replace(/^auth\./, "")}` : "Sign in"}
         </a>
       </Button>
       {config.data && !config.data.oidc && (
         <p className="max-w-sm text-sm text-muted-foreground">
           {config.data.devAuth
-            ? "OIDC isn't configured yet, so this uses the local development sign-in."
-            : config.data.passwordLogin
-              ? "Single sign-on isn't set up yet, so this uses a temporary admin password."
-              : "Sign-in isn't configured yet. Set OIDC_ISSUER and OIDC_CLIENT_ID."}
+            ? "OIDC isn't configured (no OIDC_CLIENT_SECRET in .dev.vars), so this uses the local development sign-in."
+            : "Sign-in isn't configured. Set OIDC_ISSUER, OIDC_CLIENT_ID and the OIDC_CLIENT_SECRET secret."}
         </p>
       )}
     </Centered>

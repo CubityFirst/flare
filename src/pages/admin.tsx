@@ -17,7 +17,7 @@ export function AdminPage() {
   const qc = useQueryClient();
   const users = useQuery({ queryKey: ["admin-users"], queryFn: api.adminUsers, enabled: me.role === "admin" });
   const update = useMutation({
-    mutationFn: ({ id, ...body }: { id: string; role?: User["role"]; status?: User["status"] }) => api.updateUser(id, body),
+    mutationFn: ({ id, status }: { id: string; status: User["status"] }) => api.updateUser(id, { status }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-users"] }),
     onError: (e) => toast.error(errorMessage(e)),
   });
@@ -61,19 +61,11 @@ export function AdminPage() {
               <SelectItem value="disabled">Disabled</SelectItem>
             </SelectContent>
           </Select>
-          <Select
-            value={u.role}
-            onValueChange={(role) => update.mutate({ id: u.id, role: role as User["role"] })}
-            disabled={u.id === me.id}
-          >
-            <SelectTrigger size="sm" className="w-24" aria-label="Role">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="user">User</SelectItem>
-              <SelectItem value="admin">Admin</SelectItem>
-            </SelectContent>
-          </Select>
+          {u.role === "admin" && (
+            <Badge variant="secondary" title="Granted by the identity provider's admin role">
+              Admin
+            </Badge>
+          )}
         </>
       )}
     </li>
@@ -83,7 +75,7 @@ export function AdminPage() {
     <>
       <PageHeader
         title="Users"
-        description="Everyone who has signed in with your identity provider. New users wait here for approval."
+        description="Everyone who has signed in with your identity provider. New users wait here for approval. Admin rights come from the provider's admin role."
       />
       <div className="space-y-6">
         {pending.length > 0 && (

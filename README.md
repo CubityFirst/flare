@@ -10,7 +10,9 @@ message lands on your phone and browsers and in a feed of recent notifications.
 - **Frontend:** a React + [shadcn/ui](https://ui.shadcn.com) PWA served by the same Worker.
 - **Delivery:** standard Web Push (VAPID + RFC 8291 encryption, built on WebCrypto with no dependencies). Works on
   Android, desktop browsers, and on iOS 16.4+ once Flare is added to the Home Screen.
-- **Auth:** OpenID Connect (authorization code + PKCE) against your own provider. New users wait for an admin's approval.
+- **Auth:** "Sign in with cubityfir.st", an OpenID Connect provider, via [openid-client](https://github.com/panva/openid-client)
+  (authorization code + PKCE). Admin rights come from the provider's `roles` claim. Other new users wait for an admin's
+  approval.
 
 ## Features
 
@@ -67,8 +69,10 @@ npm run dev                           # cf dev → http://localhost:5173
 
 The config is a function of the mode: `development` under `cf dev`, `production` under `cf build` / `cf deploy`.
 
-- **Dev sign-in:** in development, `DEV_AUTH` is on, so while no OIDC issuer is configured, **Sign in** goes to a
-  local dev login form. It's off in production builds, and the Worker also refuses it on anything but `localhost`.
+- **Sign-in:** with `OIDC_CLIENT_SECRET` in `.dev.vars`, local dev uses the real provider. The callback
+  `http://localhost:5173/auth/callback` is registered, and server-side OIDC requests go to the public issuer URL,
+  because the provider's Worker isn't running locally. Without the secret, **Sign in** goes to a local dev login
+  form instead. That form is off in production builds, and the Worker refuses it on anything but `localhost`.
 - **`.dev.vars` only fills declared secrets.** Locally, only bindings declared with `bindings.secret()` are read from
   it. Any other key is ignored, and plain values (`bindings.text()`) come from the config. For a value that differs
   per environment, branch on `dev` in the config.
@@ -77,41 +81,46 @@ The config is a function of the mode: `development` under `cf dev`, `production`
 
 Other scripts:
 
-- `npm test`: checks the Web Push crypto against a reference implementation.
+- `npm test`: checks the Web Push crypto against a reference implementation, and runs the OIDC flow against a
+  fake provider. Tampered signatures, nonces, audiences, state and PKCE verifiers must be rejected.
 - `npm run typecheck`: runs `cf workers types`, then `tsc`. Types are inferred from `cloudflare.config.ts` into
   `.cloudflare/types`.
 - `npm run preview`: serves the production build locally.
 - `node scripts/gen-icons.mjs`: regenerates the PWA icons.
 
-## Temporary password sign-in (until OIDC is ready)
+## Sign in with cubityfir.st
 
-Production currently uses a temporary sign-in at `/auth/password`.
+Flare is an OIDC client of `https://auth.cubityfir.st`, using openid-client. The flow is authorization code with
+PKCE S256, `state` and `nonce`.
 
-- It signs in as the first `ADMIN_EMAILS` address, using the `ADMIN_LOGIN_PASSWORD` secret (kept in the gitignored
-  `.prod.secrets`).
-- It switches itself off as soon as `OIDC_ISSUER` and `OIDC_CLIENT_ID` are set.
-- Your first OIDC sign-in with the same verified email takes over that account, so apps, keys, groups and devices
-  carry over.
-- Once OIDC works, delete the `ADMIN_LOGIN_PASSWORD` line from `cloudflare.config.ts`.
+- **Login and ID token:** the ID token is verified against the provider's JWKS (signature, `iss`, `aud`, `exp` and
+  `nonce`). Flare then starts its own 30-day session for the user, keyed on `(iss, sub)` and not tied to the
+  1-hour token lifetime.
+- **Roles:** each sign-in sets the user's role from the `roles` claim. `admin` there means admin in Flare, and
+  admins are approved automatically. Everyone else waits for approval on the Users page, unless
+  `OIDC_ACCESS_CLAIM` / `OIDC_ACCESS_VALUE` auto-approve them (e.g. `roles` / `user`).
+- **Sign-out:** clears the Flare session, then redirects to the provider's `end_session_endpoint` with
+  `id_token_hint` and `post_logout_redirect_uri`.
+- **Service binding:** in production, server-side requests to the issuer (discovery, JWKS, token) go through the
+  `OIDC` service binding to the provider's Worker, `cubityfirst-auth`, instead of the public URL. Only browser
+  redirects use `auth.cubityfir.st`.
 
-## Connecting the OIDC provider
+The client (`OIDC_CLIENT_ID` in `cloudflare.config.ts`) is registered with `scripts/oidc-client.mjs`. Its metadata
+lists the exact callback and post-logout URLs:
 
-Register Flare as a client with:
+| | |
+| --- | --- |
+| Redirect URIs | `https://flare.cubityfir.st/auth/callback`, `http://localhost:5173/auth/callback` |
+| Post-logout redirect URIs | `https://flare.cubityfir.st/`, `http://localhost:5173/` |
+| Client authentication | `client_secret_basic` |
 
-- **Redirect URIs:** `https://flare.cubityfir.st/auth/callback` (plus `http://localhost:5173/auth/callback` for dev)
-- **Post-logout redirect URI:** `https://flare.cubityfir.st`
-- **Grant:** authorization code with PKCE (S256). The client can be public or confidential.
-- **Scopes:** `openid email profile`. `email` should be present in the ID token or from userinfo.
+Registration wrote the credentials to the gitignored `.oidc.secrets`, and the client secret also to `.prod.secrets`
+and `.dev.vars`. **Back up `.oidc.secrets`.** Its registration access token is the only way to change the client.
 
-Then set `OIDC_ISSUER` and `OIDC_CLIENT_ID` in `cloudflare.config.ts`. If the client is confidential, also uncomment
-`OIDC_CLIENT_SECRET: bindings.secret()` there and set the secret. The provider must serve
-`/.well-known/openid-configuration`.
-
-Approval works like this:
-
-- New users start as **pending**, and an admin approves them on the Users page.
-- Emails in `ADMIN_EMAILS` become admins automatically. The `email_verified` claim must not be `false`.
-- To auto-approve users by claim, set `OIDC_ACCESS_CLAIM` and `OIDC_ACCESS_VALUE` (for example `groups` / `flare`).
+- To check the current registration, run `node scripts/oidc-client.mjs show`.
+- To change URLs, edit `METADATA` in the script, then run `node scripts/oidc-client.mjs update`.
+- If the secret leaks, revoke it at `https://auth.cubityfir.st/oauth/client-secret/revoke` (HTTP Basic
+  `client_id:client_secret`) and ask for a new one.
 
 ## Deploying
 
@@ -126,11 +135,10 @@ Worker under Settings → Builds, and builds run on Node 24 (`.node-version`).
 
 Secrets live on the Worker, not in the repo, so builds never need them:
 
+- `OIDC_CLIENT_SECRET`
 - `SESSION_SECRET`
 - `VAPID_PUBLIC_KEY`
 - `VAPID_PRIVATE_KEY`
-- `ADMIN_EMAILS`
-- `ADMIN_LOGIN_PASSWORD`
 
 To change one, run `npx cf workers secrets update <NAME> --worker flare`.
 
@@ -161,7 +169,7 @@ The `domains` entry binds the custom domain `flare.cubityfir.st`. A daily cron d
 ```
 cloudflare.config.ts  Worker config: bindings, secrets, domain, cron, assets
 worker/            Cloudflare Worker
-  routes/          auth (OIDC), api (session/web UI), v1 (API keys + Pushover compat)
+  routes/          auth (OIDC sign-in/out), api (session/web UI), v1 (API keys + Pushover compat)
   lib/             webpush, oidc, send pipeline, receipts, sessions
   durable/         UrgentAlert Durable Object (repeat timer)
 migrations/        D1 schema

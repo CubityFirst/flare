@@ -6,5 +6,6 @@ SESSION_SECRET=
 # Web Push key pair. Generate with: npm run vapid
 VAPID_PUBLIC_KEY=
 VAPID_PRIVATE_KEY=
-# Only if you uncomment OIDC_CLIENT_SECRET in cloudflare.config.ts:
+# The cubityfir.st OIDC client secret (in the gitignored .oidc.secrets). Leave it out to
+# use the local dev sign-in instead of real OIDC.
 # OIDC_CLIENT_SECRET=

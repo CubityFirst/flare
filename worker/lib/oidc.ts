@@ -1,65 +1,94 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
-import { b64urlEncode, randomBytes, utf8 } from "./encoding";
+import * as client from "openid-client";
 
-interface Discovery {
-  issuer: string;
-  authorization_endpoint: string;
-  token_endpoint: string;
-  jwks_uri: string;
-  userinfo_endpoint?: string;
-  end_session_endpoint?: string;
-  token_endpoint_auth_methods_supported?: string[];
+/**
+ * OpenID Connect relying party, built on openid-client (authorization code + PKCE S256,
+ * with state and nonce). Everything is configured from the issuer's discovery document.
+ *
+ * Server-side requests to the issuer (discovery, JWKS, token, userinfo) go through the
+ * `OIDC` service binding to the provider's Worker, since it lives in the same account and
+ * zone. The binding is only declared in production; under `cf dev` the provider Worker
+ * isn't running, so requests fall back to the public issuer URL.
+ */
+
+/** Only declared for production in cloudflare.config.ts, so it's optional here. */
+function oidcBinding(env: Env): Fetcher | undefined {
+  return (env as Env & { OIDC?: Fetcher }).OIDC;
 }
 
-let cached: { issuer: string; at: number; discovery: Discovery; jwks: ReturnType<typeof createRemoteJWKSet> } | null =
-  null;
-
-/** Only set for confidential clients, so it isn't declared in cloudflare.config.ts by default. */
 function clientSecret(env: Env): string | undefined {
   return (env as Env & { OIDC_CLIENT_SECRET?: string }).OIDC_CLIENT_SECRET || undefined;
 }
 
+/**
+ * The client is confidential, so the secret is required too. Without it (e.g. a fresh
+ * checkout with no OIDC_CLIENT_SECRET in .dev.vars), `cf dev` falls back to the dev sign-in.
+ */
 export function oidcConfigured(env: Env): boolean {
-  return Boolean(env.OIDC_ISSUER && env.OIDC_CLIENT_ID);
+  return Boolean(env.OIDC_ISSUER && env.OIDC_CLIENT_ID && clientSecret(env));
 }
 
-export async function getDiscovery(env: Env) {
-  const issuer = env.OIDC_ISSUER.replace(/\/$/, "");
-  if (cached && cached.issuer === issuer && Date.now() - cached.at < 3600_000) return cached;
-  const res = await fetch(`${issuer}/.well-known/openid-configuration`, { headers: { accept: "application/json" } });
-  if (!res.ok) throw new Error(`OIDC discovery failed: ${res.status}`);
-  const discovery = (await res.json()) as Discovery;
-  cached = { issuer, at: Date.now(), discovery, jwks: createRemoteJWKSet(new URL(discovery.jwks_uri)) };
-  return cached;
+/** Registered with the provider byte for byte (see scripts/oidc-client.mjs). */
+export const redirectUri = (env: Env) => new URL("/auth/callback", env.APP_URL).href;
+export const postLogoutRedirectUri = (env: Env) => new URL("/", env.APP_URL).href;
+
+const CONFIG_TTL = 3600_000;
+let cached: { key: string; at: number; config: client.Configuration } | null = null;
+
+/** For tests, which each bring their own fake provider. */
+export function clearOidcCache() {
+  cached = null;
 }
 
-export function redirectUri(env: Env, requestUrl: string): string {
-  // Use the request origin so local dev (localhost) and production both work.
-  const origin = new URL(requestUrl).origin;
-  return `${origin || env.APP_URL}/auth/callback`;
+/**
+ * Discovers the issuer and returns an openid-client Configuration, cached per isolate for
+ * an hour. openid-client refetches the JWKS by itself when it meets an unknown key ID.
+ */
+export async function oidcConfig(env: Env): Promise<client.Configuration> {
+  const issuer = new URL(env.OIDC_ISSUER);
+  const secret = clientSecret(env);
+  if (!secret) throw new Error("OIDC_CLIENT_SECRET isn't set");
+  const key = `${issuer.href}|${env.OIDC_CLIENT_ID}|${secret}`;
+  if (cached && cached.key === key && Date.now() - cached.at < CONFIG_TTL) return cached.config;
+
+  const binding = oidcBinding(env);
+  const viaBinding: client.CustomFetch = (url, init) =>
+    binding && new URL(url).host === issuer.host ? binding.fetch(url, init) : fetch(url, init);
+
+  const config = await client.discovery(issuer, env.OIDC_CLIENT_ID, secret, client.ClientSecretBasic(secret), {
+    [client.customFetch]: viaBinding,
+    // openid-client skips the ID token signature check by default (the token came straight
+    // from the token endpoint over TLS); this turns on JWKS verification of the signature.
+    execute: [client.enableNonRepudiationChecks],
+  });
+  cached = { key, at: Date.now(), config };
+  return config;
 }
 
-export async function pkcePair() {
-  const verifier = b64urlEncode(randomBytes(32));
-  const challenge = b64urlEncode(await crypto.subtle.digest("SHA-256", utf8(verifier)));
-  return { verifier, challenge };
+/** The per-login values the callback needs; kept in a signed, short-lived cookie. */
+export interface LoginFlow {
+  state: string;
+  nonce: string;
+  verifier: string;
+  returnTo: string;
 }
 
-export async function buildAuthorizationUrl(
-  env: Env,
-  params: { redirectUri: string; state: string; nonce: string; challenge: string },
-) {
-  const { discovery } = await getDiscovery(env);
-  const url = new URL(discovery.authorization_endpoint);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", env.OIDC_CLIENT_ID);
-  url.searchParams.set("redirect_uri", params.redirectUri);
-  url.searchParams.set("scope", env.OIDC_SCOPES || "openid email profile");
-  url.searchParams.set("state", params.state);
-  url.searchParams.set("nonce", params.nonce);
-  url.searchParams.set("code_challenge", params.challenge);
-  url.searchParams.set("code_challenge_method", "S256");
-  return url.toString();
+export async function startLogin(env: Env, returnTo: string): Promise<{ url: string; flow: LoginFlow }> {
+  const config = await oidcConfig(env);
+  const flow: LoginFlow = {
+    state: client.randomState(),
+    nonce: client.randomNonce(),
+    verifier: client.randomPKCECodeVerifier(),
+    returnTo,
+  };
+  const url = client.buildAuthorizationUrl(config, {
+    redirect_uri: redirectUri(env),
+    scope: env.OIDC_SCOPES,
+    state: flow.state,
+    nonce: flow.nonce,
+    code_challenge: await client.calculatePKCECodeChallenge(flow.verifier),
+    code_challenge_method: "S256",
+  });
+  return { url: url.href, flow };
 }
 
 export interface OidcIdentity {
@@ -69,73 +98,48 @@ export interface OidcIdentity {
   emailVerified: boolean;
   name: string | null;
   picture: string | null;
-  claims: JWTPayload & Record<string, unknown>;
+  roles: string[];
+  claims: Record<string, unknown>;
+  /** Kept with the session, only as `id_token_hint` for RP-initiated logout. */
+  idToken: string | null;
 }
 
-export async function exchangeCode(
-  env: Env,
-  params: { code: string; redirectUri: string; verifier: string; nonce: string },
-): Promise<OidcIdentity> {
-  const { discovery, jwks } = await getDiscovery(env);
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: params.code,
-    redirect_uri: params.redirectUri,
-    code_verifier: params.verifier,
-    client_id: env.OIDC_CLIENT_ID,
+/**
+ * Exchanges the authorization code (with the PKCE verifier, authenticating with the client
+ * secret) and verifies the ID token: signature against the issuer's JWKS, iss, aud, exp,
+ * iat and nonce. Also checks `state` and the RFC 9207 `iss` response parameter.
+ */
+export async function finishLogin(env: Env, callbackUrl: URL, flow: LoginFlow): Promise<OidcIdentity> {
+  const config = await oidcConfig(env);
+  // The token request's redirect_uri must equal the one we registered, whatever host the
+  // request actually arrived on.
+  const current = new URL(redirectUri(env));
+  current.search = callbackUrl.search;
+
+  const tokens = await client.authorizationCodeGrant(config, current, {
+    pkceCodeVerifier: flow.verifier,
+    expectedState: flow.state,
+    expectedNonce: flow.nonce,
+    idTokenExpected: true,
   });
-  const headers: Record<string, string> = {
-    "content-type": "application/x-www-form-urlencoded",
-    accept: "application/json",
-  };
-  const secret = clientSecret(env);
-  if (secret) {
-    const methods = discovery.token_endpoint_auth_methods_supported ?? ["client_secret_basic"];
-    if (methods.includes("client_secret_basic")) {
-      const enc = (s: string) => encodeURIComponent(s);
-      headers.authorization = `Basic ${btoa(`${enc(env.OIDC_CLIENT_ID)}:${enc(secret)}`)}`;
-    } else {
-      body.set("client_secret", secret);
-    }
-  }
-
-  const res = await fetch(discovery.token_endpoint, { method: "POST", headers, body });
-  if (!res.ok) throw new Error(`Token exchange failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
-  const tokens = (await res.json()) as { id_token?: string; access_token?: string };
-  if (!tokens.id_token) throw new Error("Token response had no id_token");
-
-  const { payload } = await jwtVerify(tokens.id_token, jwks, {
-    issuer: discovery.issuer,
-    audience: env.OIDC_CLIENT_ID,
-  });
-  if (payload.nonce !== params.nonce) throw new Error("ID token nonce mismatch");
-  if (!payload.sub) throw new Error("ID token has no sub");
-
-  let claims = payload as JWTPayload & Record<string, unknown>;
-  // Some providers only put profile claims in userinfo.
-  if (!claims.email && discovery.userinfo_endpoint && tokens.access_token) {
-    const info = await fetch(discovery.userinfo_endpoint, {
-      headers: { authorization: `Bearer ${tokens.access_token}`, accept: "application/json" },
-    });
-    if (info.ok) {
-      const extra = (await info.json()) as Record<string, unknown>;
-      if (extra.sub === payload.sub) claims = { ...extra, ...claims, email: extra.email, name: claims.name ?? extra.name };
-    }
-  }
+  const claims = tokens.claims();
+  if (!claims) throw new Error("Token response had no ID token");
 
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   return {
-    iss: discovery.issuer,
-    sub: payload.sub,
+    iss: claims.iss,
+    sub: claims.sub,
     email: str(claims.email)?.toLowerCase() ?? null,
-    emailVerified: claims.email_verified !== false,
+    emailVerified: claims.email_verified === true,
     name: str(claims.name) ?? str(claims.preferred_username),
     picture: str(claims.picture),
-    claims,
+    roles: Array.isArray(claims.roles) ? claims.roles.filter((r): r is string => typeof r === "string") : [],
+    claims: { ...claims },
+    idToken: tokens.id_token ?? null,
   };
 }
 
-/** Whether the configured access claim (e.g. groups contains "flare") is present. */
+/** Whether the configured access claim (e.g. roles contains "user") is present. */
 export function hasAccessClaim(env: Env, claims: Record<string, unknown>): boolean {
   if (!env.OIDC_ACCESS_CLAIM || !env.OIDC_ACCESS_VALUE) return false;
   const value = claims[env.OIDC_ACCESS_CLAIM];
@@ -145,13 +149,12 @@ export function hasAccessClaim(env: Env, claims: Record<string, unknown>): boole
   return false;
 }
 
-export async function endSessionUrl(env: Env, postLogoutRedirect: string): Promise<string | null> {
-  const endpoint = await getDiscovery(env)
-    .then((d) => d.discovery.end_session_endpoint)
-    .catch(() => undefined);
-  if (!endpoint) return null;
-  const url = new URL(endpoint);
-  url.searchParams.set("client_id", env.OIDC_CLIENT_ID);
-  url.searchParams.set("post_logout_redirect_uri", postLogoutRedirect);
-  return url.toString();
+/** RP-initiated logout at the provider, or null if it doesn't offer one. */
+export async function endSessionUrl(env: Env, idToken: string | null): Promise<string | null> {
+  const config = await oidcConfig(env);
+  if (!config.serverMetadata().end_session_endpoint) return null;
+  return client.buildEndSessionUrl(config, {
+    post_logout_redirect_uri: postLogoutRedirectUri(env),
+    ...(idToken && { id_token_hint: idToken }),
+  }).href;
 }
