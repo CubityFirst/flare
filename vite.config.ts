@@ -12,4 +12,6 @@ export default defineConfig({
       "@shared": fileURLToPath(new URL("./shared", import.meta.url)),
     },
   },
+  // The Android app (mobile/) has its own toolchain; its builds shouldn't reload the web app.
+  server: { watch: { ignored: ["**/mobile/**"] } },
 });

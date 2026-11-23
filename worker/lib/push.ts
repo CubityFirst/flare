@@ -1,4 +1,5 @@
 import type { Priority, PushPayload } from "@shared/types";
+import { fcmConfigured, sendFcm } from "./fcm";
 import { sendWebPush, type Urgency, type VapidKeys } from "./webpush";
 
 export function vapidKeys(env: Env): VapidKeys | null {
@@ -9,6 +10,7 @@ export function vapidKeys(env: Env): VapidKeys | null {
 interface DeviceRow {
   id: string;
   user_id: string;
+  kind: "webpush" | "fcm";
   endpoint: string;
   p256dh: string;
   auth: string;
@@ -83,7 +85,8 @@ export async function pushToTargets(
   opts: { ttl?: number; topic?: string } = {},
 ): Promise<number> {
   const vapid = vapidKeys(env);
-  if (!vapid || targets.length === 0) return 0;
+  const fcm = fcmConfigured(env);
+  if ((!vapid && !fcm) || targets.length === 0) return 0;
 
   const byUser = new Map<string, string>();
   for (const t of targets) byUser.set(t.userId, t.deliveryId);
@@ -93,7 +96,7 @@ export async function pushToTargets(
   for (let i = 0; i < userIds.length; i += 90) {
     const chunk = userIds.slice(i, i + 90);
     const { results } = await env.DB.prepare(
-      `SELECT id, user_id, endpoint, p256dh, auth FROM devices
+      `SELECT id, user_id, kind, endpoint, p256dh, auth FROM devices
        WHERE enabled = 1 AND user_id IN (${chunk.map(() => "?").join(",")})`,
     )
       .bind(...chunk)
@@ -105,11 +108,23 @@ export async function pushToTargets(
   const results = await Promise.all(
     devices.map(async (d) => {
       const payload: PushPayload = { v: 1, type: "message", deliveryId: byUser.get(d.user_id)!, ts: now, ...content };
-      const r = await sendWebPush(d, JSON.stringify(payload), vapid, {
-        ttl: opts.ttl,
-        urgency: urgencyFor(content.priority),
-        topic: opts.topic,
-      });
+      if (d.kind === "fcm") {
+        const r = fcm
+          ? await sendFcm(env, d.endpoint, payload, {
+              ttl: opts.ttl,
+              highPriority: content.priority >= 0,
+              collapseKey: opts.topic,
+            })
+          : { ok: false, gone: false, error: "FCM isn't configured" };
+        return { device: d, result: r };
+      }
+      const r = vapid
+        ? await sendWebPush(d, JSON.stringify(payload), vapid, {
+            ttl: opts.ttl,
+            urgency: urgencyFor(content.priority),
+            topic: opts.topic,
+          })
+        : { ok: false, gone: false, error: "Web Push isn't configured" };
       return { device: d, result: r };
     }),
   );

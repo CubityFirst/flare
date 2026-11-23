@@ -1,0 +1,10 @@
+<!-- Status bar icon: the Flare sparkle, white on transparent as Android requires. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+  android:width="24dp"
+  android:height="24dp"
+  android:viewportWidth="100"
+  android:viewportHeight="100">
+  <path
+    android:fillColor="#FFFFFFFF"
+    android:pathData="M50,14Q50,50 86,50Q50,50 50,86Q50,50 14,50Q50,50 50,14ZM73.5,16Q73.5,27 84.5,27Q73.5,27 73.5,38Q73.5,27 62.5,27Q73.5,27 73.5,16Z" />
+</vector>

@@ -38,9 +38,13 @@ export interface Me {
 export interface Device {
   id: string;
   name: string;
-  kind: "webpush";
+  /** "webpush" for browsers (the PWA), "fcm" for the Android app. */
+  kind: "webpush" | "fcm";
   endpointHost: string;
-  /** Full push endpoint, used to recognise the current browser. Only returned to the owner. */
+  /**
+   * Full push endpoint (or FCM token), used to recognise the current browser or phone.
+   * Only returned to the owner.
+   */
   endpoint: string;
   userAgent: string | null;
   enabled: boolean;

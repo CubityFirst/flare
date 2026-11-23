@@ -283,7 +283,7 @@ api.post("/messages", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Devices (Web Push subscriptions)
+// Devices (Web Push subscriptions and the Android app's FCM tokens)
 
 const PUSH_HOSTS = [
   /^fcm\.googleapis\.com$/,
@@ -293,7 +293,7 @@ const PUSH_HOSTS = [
   /\.notify\.windows\.com$/,
 ];
 
-const deviceSchema = z.object({
+const webPushDeviceSchema = z.object({
   name: z.string().trim().min(1).max(80),
   subscription: z.object({
     endpoint: z
@@ -308,9 +308,18 @@ const deviceSchema = z.object({
   }),
 });
 
+/** The Android app registers its Firebase Cloud Messaging token. */
+const fcmDeviceSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  fcm: z.object({ token: z.string().regex(/^[A-Za-z0-9_:\-]{100,4096}$/, "Invalid FCM token") }),
+});
+
+const deviceSchema = z.union([webPushDeviceSchema, fcmDeviceSchema]);
+
 interface DeviceRow {
   id: string;
   name: string;
+  kind: "webpush" | "fcm";
   endpoint: string;
   user_agent: string | null;
   enabled: number;
@@ -322,8 +331,8 @@ interface DeviceRow {
 const toDevice = (d: DeviceRow): Device => ({
   id: d.id,
   name: d.name,
-  kind: "webpush",
-  endpointHost: new URL(d.endpoint).hostname,
+  kind: d.kind,
+  endpointHost: d.kind === "fcm" ? "fcm.googleapis.com" : new URL(d.endpoint).hostname,
   endpoint: d.endpoint,
   userAgent: d.user_agent,
   enabled: Boolean(d.enabled),
@@ -344,19 +353,20 @@ api.post("/devices", async (c) => {
   const user = c.get("user");
   const ua = c.req.header("user-agent")?.slice(0, 300) ?? null;
   const now = Date.now();
-  // Re-subscribing the same browser (or signing in as someone else on it) takes over the endpoint.
+  const [kind, endpoint, p256dh, authKey] =
+    "fcm" in input
+      ? (["fcm", input.fcm.token, "", ""] as const)
+      : (["webpush", input.subscription.endpoint, input.subscription.keys.p256dh, input.subscription.keys.auth] as const);
+  // Re-subscribing the same browser or phone (or signing in as someone else on it) takes over the endpoint.
   await c.env.DB.prepare(
-    `INSERT INTO devices (id, user_id, name, endpoint, p256dh, auth, user_agent, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (endpoint) DO UPDATE SET user_id = excluded.user_id, name = excluded.name,
+    `INSERT INTO devices (id, user_id, name, kind, endpoint, p256dh, auth, user_agent, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (endpoint) DO UPDATE SET user_id = excluded.user_id, name = excluded.name, kind = excluded.kind,
        p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent, enabled = 1, last_error = NULL`,
   )
-    .bind(randomId(), user.id, input.name, input.subscription.endpoint, input.subscription.keys.p256dh,
-      input.subscription.keys.auth, ua, now)
+    .bind(randomId(), user.id, input.name, kind, endpoint, p256dh, authKey, ua, now)
     .run();
-  const row = await c.env.DB.prepare("SELECT * FROM devices WHERE endpoint = ?")
-    .bind(input.subscription.endpoint)
-    .first<DeviceRow>();
+  const row = await c.env.DB.prepare("SELECT * FROM devices WHERE endpoint = ?").bind(endpoint).first<DeviceRow>();
   return c.json(toDevice(row!), 201);
 });
 

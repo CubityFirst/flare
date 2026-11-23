@@ -122,6 +122,50 @@ and `.dev.vars`. **Back up `.oidc.secrets`.** Its registration access token is t
 - If the secret leaks, revoke it at `https://auth.cubityfir.st/oauth/client-secret/revoke` (HTTP Basic
   `client_id:client_secret`) and ask for a new one.
 
+## Android app
+
+`mobile/` is the Android app (Expo SDK 58, React Native). Sign in with cubityfir.st, get Flare's alerts as
+native notifications, read and acknowledge them. Apps, keys, groups and admin stay in the web app.
+
+- **Pushes** come through Firebase Cloud Messaging as data-only messages, so the app builds every
+  notification itself (`mobile/modules/flare-push`, Kotlin). Each priority has its own Android channel.
+- **Urgent alerts** play on the *alarm* stream, so they ring when the phone is on silent or vibrate. With
+  "Play at full volume" on (the default), the alarm volume goes to full while one plays, then back. The
+  Acknowledge button works from the notification, app closed or not. Full screen and Do Not Disturb
+  bypass are offered in the app's Settings.
+- **Other priorities** play on the notification stream, so silent mode and Do Not Disturb mute them.
+- Built-in sounds are WAVs rendered from the web app's synthesiser (`npm run sounds` in `mobile/`); custom
+  sounds are downloaded from Flare and cached.
+
+Sign-in hands off from the browser with a one-time code: the app opens `/auth/login?mobile=<PKCE challenge>`,
+the normal OIDC flow runs against the registered callback, and the callback sends the code to
+`flare://auth`. The app redeems it with its verifier at `POST /auth/mobile/token` for a bearer session
+(sliding, a year), stored in the app's private storage. So no new redirect URIs are registered with the
+provider.
+
+### Firebase
+
+1. Create a Firebase project and add an Android app with package `st.cubityfir.flare`.
+2. Save its `google-services.json` as `mobile/google-services.json` (gitignored). Without it the app
+   builds and runs, but can't receive pushes; Settings says so.
+3. Generate a service account key (Project settings → Service accounts) and store the whole JSON file
+   as the Worker secret `FCM_SERVICE_ACCOUNT`. It's optional, so it isn't declared in
+   `cloudflare.config.ts` (cf refuses to deploy without declared secrets).
+
+### Building
+
+Needs JDK 17 and the Android SDK. From `mobile/`:
+
+```sh
+npm install
+npx expo prebuild --platform android   # generates android/ (gitignored)
+npx expo run:android                   # debug build on a device or emulator, with Metro
+```
+
+Debug builds can sign in to a local `cf dev` server: enter its URL on the sign-in screen (with
+`adb reverse tcp:<port> tcp:<port>`) and use **Dev sign-in**. Settings → Debug shows sample notifications
+through the same code a push uses.
+
 ## Deploying
 
 Pushes to `main` deploy automatically through **Cloudflare Workers Builds**. The repo is connected to the `flare`
@@ -139,6 +183,7 @@ Secrets live on the Worker, not in the repo, so builds never need them:
 - `SESSION_SECRET`
 - `VAPID_PUBLIC_KEY`
 - `VAPID_PRIVATE_KEY`
+- `FCM_SERVICE_ACCOUNT` (optional: pushes to the Android app)
 
 To change one, run `npx cf workers secrets update <NAME> --worker flare`.
 
@@ -176,11 +221,14 @@ migrations/        D1 schema
 shared/            types shared by Worker and frontend
 src/               React app (pages/, components/ui = shadcn)
 public/sw.js       service worker: shows notifications, Acknowledge action
+mobile/            Android app (Expo)
+  src/app/         screens (Expo Router): sign-in, feed, message, settings
+  modules/flare-push/  native push handling: FCM service, notifications, alarm-stream player
 ```
 
 ## Not done yet
 
-- A native app, for custom background sounds and critical alerts
+- An iOS app (the Expo app is Android-only for now)
 - Rate limiting per key
 - Quiet hours
 - Attachments and images

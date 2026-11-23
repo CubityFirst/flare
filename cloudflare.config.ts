@@ -13,6 +13,12 @@ import * as entrypoint from "./worker/index.ts" with { type: "cf-worker" };
  *   SESSION_SECRET      signs the short-lived OIDC login cookie
  *   VAPID_PUBLIC_KEY    Web Push key pair, from `npm run vapid`. The public half isn't
  *   VAPID_PRIVATE_KEY   sensitive, but storing both as secrets keeps each environment's pair together.
+ *
+ * Optional secret, deliberately not declared below (cf treats declared secrets as required,
+ * and deploys refuse to run without them):
+ *   FCM_SERVICE_ACCOUNT Firebase service account key (the JSON file) for pushes to the
+ *                       Android app. Without it, only browsers get pushes. Set it with
+ *                       `npx cf workers secrets update FCM_SERVICE_ACCOUNT --worker flare`.
  */
 /** Local-only D1 ID. Must match the `db:migrate:local` script in package.json. */
 const LOCAL_D1_ID = "00000000-0000-4000-8000-00000000f1a3";

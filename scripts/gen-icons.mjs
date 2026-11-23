@@ -85,3 +85,15 @@ writeFileSync("public/icons/apple-touch-icon.png", png(180, icon(1, false))); //
 // Android status-bar badge: white glyph on transparent.
 writeFileSync("public/icons/badge-96.png", png(96, (x, y) => (glyph(x, y, 1.15) ? [255, 255, 255, 1] : [0, 0, 0, 0])));
 console.log("Wrote public/icons/*.png");
+
+// Android app (mobile/). Adaptive icons are cropped to a circle or squircle from the middle
+// 66%, so the foreground glyph is shrunk about the centre to stay inside that safe zone.
+const shrunk = (s) => (x, y) => glyph(0.5 + (x - 0.5) / s, 0.5 + (y - 0.5) / s, 1);
+const white = (fn) => (x, y) => (fn(x, y) ? [255, 255, 255, 1] : [0, 0, 0, 0]);
+mkdirSync("mobile/assets", { recursive: true });
+writeFileSync("mobile/assets/icon.png", png(1024, icon(1, false)));
+writeFileSync("mobile/assets/android-icon-background.png", png(512, () => [...FUCHSIA, 1]));
+writeFileSync("mobile/assets/android-icon-foreground.png", png(1024, white(shrunk(0.62))));
+writeFileSync("mobile/assets/android-icon-monochrome.png", png(1024, white(shrunk(0.62))));
+writeFileSync("mobile/assets/splash-icon.png", png(512, white(shrunk(0.9))));
+console.log("Wrote mobile/assets/*.png");
