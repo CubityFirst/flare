@@ -1,99 +1,83 @@
-// Generates the PNG app icons in public/icons from a simple vector description:
-// a fuchsia rounded square with a white four-point "flare" star. No dependencies.
-import { mkdirSync, writeFileSync } from "node:fs";
-import { deflateSync } from "node:zlib";
+// Generates every app icon from two SVG masters:
+//   assets/icon.svg        the full-colour icon, full bleed: <defs>, a 512×512 background <rect fill="url(#bg)">,
+//                          then the mark
+//   assets/icon-badge.svg  the same mark as a white silhouette, for notification badges
+// Outputs the web favicon and PWA icons in public/, the Android app's icons in mobile/assets/, and the
+// Android status-bar vector in the flare-push module. Run from the repo root: node scripts/gen-icons.mjs
+import sharp from "sharp";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
-const FUCHSIA = [0xc0, 0x26, 0xd3];
+const icon = readFileSync("assets/icon.svg", "utf8");
+const badge = readFileSync("assets/icon-badge.svg", "utf8");
 
-function crc32(buf) {
-  let c, crc = 0xffffffff;
-  for (let n = 0; n < buf.length; n++) {
-    c = (crc ^ buf[n]) & 0xff;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    crc = (crc >>> 8) ^ c;
-  }
-  return (crc ^ 0xffffffff) >>> 0;
+const DEFS = icon.match(/<defs>[\s\S]*?<\/defs>/)?.[0];
+const BG = icon.match(/<rect width="512" height="512" fill="url\(#bg\)"\/>/)?.[0];
+if (!DEFS || !BG) throw new Error("assets/icon.svg: expected <defs> and a 512×512 <rect fill=url(#bg)> background");
+const MARK = icon.slice(icon.indexOf(BG) + BG.length, icon.lastIndexOf("</svg>"));
+const BADGE_MARK = badge.replace(/^[\s\S]*?<svg[^>]*>/, "").replace(/<\/svg>\s*$/, "");
+
+const scaled = (body, s) => (s === 1 ? body : `<g transform="translate(256 256) scale(${s}) translate(-256 -256)">${body}</g>`);
+
+/**
+ * Builds a 512-unit SVG. `bg` is the background element (or none), `mark` the mark's markup, scaled about
+ * the centre by `scale`; `rx` rounds the corners.
+ */
+function compose({ defs = DEFS, bg = BG, mark = MARK, scale = 1, rx = 0 }) {
+  const clip = rx ? `<clipPath id="round"><rect width="512" height="512" rx="${rx}"/></clipPath>` : "";
+  const body = (bg ?? "") + scaled(mark, scale);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">${defs ?? ""}${clip && `<defs>${clip}</defs>`}${rx ? `<g clip-path="url(#round)">${body}</g>` : body}</svg>`;
 }
 
-function chunk(type, data) {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const td = Buffer.concat([Buffer.from(type), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(td));
-  return Buffer.concat([len, td, crc]);
-}
+const ROUND = 112; // ≈ 22% corner radius, close to the OS masks
+// Maskable icons may be cropped to a centred circle of radius 40%, and the arcs reach further than that.
+const MASKABLE_SCALE = 0.82;
+// Android adaptive icon layers show their middle 66%, and the launcher may crop that to a circle.
+const ADAPTIVE_SCALE = 0.6;
+// The badge mark fills about 72% of its box; badges want it nearly edge to edge.
+const BADGE_SCALE = 1.15;
 
-function png(size, pixel) {
-  const raw = Buffer.alloc(size * (size * 4 + 1));
-  const SS = 4; // supersampling for antialiasing
-  for (let y = 0; y < size; y++) {
-    raw[y * (size * 4 + 1)] = 0;
-    for (let x = 0; x < size; x++) {
-      let acc = [0, 0, 0, 0];
-      for (let sy = 0; sy < SS; sy++)
-        for (let sx = 0; sx < SS; sx++) {
-          const [r, g, b, a] = pixel((x + (sx + 0.5) / SS) / size, (y + (sy + 0.5) / SS) / size);
-          acc = [acc[0] + r * a, acc[1] + g * a, acc[2] + b * a, acc[3] + a];
-        }
-      const o = y * (size * 4 + 1) + 1 + x * 4;
-      const a = acc[3] / (SS * SS);
-      raw[o] = a ? Math.round(acc[0] / acc[3]) : 0;
-      raw[o + 1] = a ? Math.round(acc[1] / acc[3]) : 0;
-      raw[o + 2] = a ? Math.round(acc[2] / acc[3]) : 0;
-      raw[o + 3] = Math.round(a * 255);
-    }
-  }
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(size, 0);
-  ihdr.writeUInt32BE(size, 4);
-  ihdr[8] = 8; ihdr[9] = 6; // 8-bit RGBA
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", ihdr),
-    chunk("IDAT", deflateSync(raw, { level: 9 })),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
-}
-
-function inRoundedSquare(x, y, r) {
-  const cx = Math.min(Math.max(x, r), 1 - r), cy = Math.min(Math.max(y, r), 1 - r);
-  return (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
-}
-
-// Four-point star: |dx|^p + |dy|^p <= R^p with p < 1 gives concave sides.
-function inStar(x, y, cx, cy, R) {
-  const dx = Math.abs(x - cx) / R, dy = Math.abs(y - cy) / R;
-  return Math.pow(dx, 0.5) + Math.pow(dy, 0.5) <= 1;
-}
-
-function glyph(x, y, scale) {
-  return inStar(x, y, 0.5, 0.5, 0.36 * scale) || inStar(x, y, 0.735, 0.27, 0.11 * scale);
-}
-
-const icon = (scale, rounded) => (x, y) => {
-  const bg = rounded ? inRoundedSquare(x, y, 0.22) : true;
-  if (!bg) return [0, 0, 0, 0];
-  return glyph(x, y, scale) ? [255, 255, 255, 1] : [...FUCHSIA, 1];
-};
+const write = async (path, svg, size) =>
+  writeFileSync(path, await sharp(Buffer.from(svg), { density: Math.ceil((size / 512) * 72 * 4) }).resize(size, size).png({ compressionLevel: 9 }).toBuffer());
 
 mkdirSync("public/icons", { recursive: true });
-writeFileSync("public/icons/icon-192.png", png(192, icon(1, true)));
-writeFileSync("public/icons/icon-512.png", png(512, icon(1, true)));
-writeFileSync("public/icons/icon-maskable-512.png", png(512, icon(0.75, false)));
-writeFileSync("public/icons/apple-touch-icon.png", png(180, icon(1, false))); // iOS rounds corners itself
-// Android status-bar badge: white glyph on transparent.
-writeFileSync("public/icons/badge-96.png", png(96, (x, y) => (glyph(x, y, 1.15) ? [255, 255, 255, 1] : [0, 0, 0, 0])));
-console.log("Wrote public/icons/*.png");
+writeFileSync("public/icon.svg", compose({ rx: ROUND }) + "\n");
+await write("public/icons/icon-192.png", compose({ rx: ROUND }), 192);
+await write("public/icons/icon-512.png", compose({ rx: ROUND }), 512);
+await write("public/icons/icon-maskable-512.png", compose({ scale: MASKABLE_SCALE }), 512);
+await write("public/icons/apple-touch-icon.png", compose({}), 180); // iOS rounds the corners itself
+await write("public/icons/badge-96.png", compose({ defs: null, bg: null, mark: BADGE_MARK, scale: BADGE_SCALE }), 96);
+console.log("Wrote public/icon.svg and public/icons/*.png");
 
-// Android app (mobile/). Adaptive icons are cropped to a circle or squircle from the middle
-// 66%, so the foreground glyph is shrunk about the centre to stay inside that safe zone.
-const shrunk = (s) => (x, y) => glyph(0.5 + (x - 0.5) / s, 0.5 + (y - 0.5) / s, 1);
-const white = (fn) => (x, y) => (fn(x, y) ? [255, 255, 255, 1] : [0, 0, 0, 0]);
+// Android app. The adaptive background layer shows only its middle 66%, so its glow is pulled in to
+// match the full icon's look once the foreground is shrunk into the safe zone.
+const adaptiveDefs = DEFS.replace(/(<radialGradient id="bg")[^>]*>/, '$1 cx="0.5" cy="0.45" r="0.5">');
+if (adaptiveDefs === DEFS) throw new Error('assets/icon.svg: expected <radialGradient id="bg">');
 mkdirSync("mobile/assets", { recursive: true });
-writeFileSync("mobile/assets/icon.png", png(1024, icon(1, false)));
-writeFileSync("mobile/assets/android-icon-background.png", png(512, () => [...FUCHSIA, 1]));
-writeFileSync("mobile/assets/android-icon-foreground.png", png(1024, white(shrunk(0.62))));
-writeFileSync("mobile/assets/android-icon-monochrome.png", png(1024, white(shrunk(0.62))));
-writeFileSync("mobile/assets/splash-icon.png", png(512, white(shrunk(0.9))));
+await write("mobile/assets/icon.png", compose({}), 1024);
+await write("mobile/assets/android-icon-background.png", compose({ defs: adaptiveDefs, mark: "" }), 512);
+await write("mobile/assets/android-icon-foreground.png", compose({ bg: null, scale: ADAPTIVE_SCALE }), 1024);
+await write("mobile/assets/android-icon-monochrome.png", compose({ defs: null, bg: null, mark: BADGE_MARK, scale: ADAPTIVE_SCALE }), 1024);
+await write("mobile/assets/splash-icon.png", compose({ bg: null }), 512);
 console.log("Wrote mobile/assets/*.png");
+
+// Status-bar icon. Android vector drawables accept SVG path data, arcs included. The viewport is cropped
+// to the middle of the 512 box so the mark is scaled up by BADGE_SCALE, like badge-96.png.
+const paths = [...badge.matchAll(/<path d="([^"]+)"/g)].map((m) => m[1]);
+if (!paths.length) throw new Error("assets/icon-badge.svg: no <path d> found");
+const vb = +(512 / BADGE_SCALE).toFixed(2), off = +((512 - vb) / 2).toFixed(2);
+writeFileSync(
+  "mobile/modules/flare-push/android/src/main/res/drawable/ic_flare_notification.xml",
+  `<!-- Status bar icon: the Flare mark, white on transparent as Android requires.
+     Generated from assets/icon-badge.svg by scripts/gen-icons.mjs. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+  android:width="24dp"
+  android:height="24dp"
+  android:viewportWidth="${vb}"
+  android:viewportHeight="${vb}">
+  <group android:translateX="-${off}" android:translateY="-${off}">
+${paths.map((d) => `    <path android:fillColor="#FFFFFFFF" android:pathData="${d}" />`).join("\n")}
+  </group>
+</vector>
+`,
+);
+console.log("Wrote mobile/modules/flare-push/.../ic_flare_notification.xml");

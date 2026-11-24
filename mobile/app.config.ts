@@ -22,7 +22,7 @@ const config: ExpoConfig = {
     package: "st.cubityfir.flare",
     versionCode: 1,
     adaptiveIcon: {
-      backgroundColor: "#c026d3",
+      backgroundColor: "#1a052a",
       foregroundImage: "./assets/android-icon-foreground.png",
       backgroundImage: "./assets/android-icon-background.png",
       monochromeImage: "./assets/android-icon-monochrome.png",
@@ -38,7 +38,7 @@ const config: ExpoConfig = {
       {
         image: "./assets/splash-icon.png",
         imageWidth: 120,
-        backgroundColor: "#c026d3",
+        backgroundColor: "#1a052a",
       },
     ],
   ],

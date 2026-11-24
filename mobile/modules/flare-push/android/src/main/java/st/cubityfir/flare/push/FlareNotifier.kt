@@ -23,6 +23,8 @@ import org.json.JSONObject
  *    2 urgent  alarm-volume sound, long vibration, full screen if allowed, Acknowledge button;
  *              repeats from the server replace the same notification
  *
+ * Everything that isn't an urgent alert gets a Mark read button instead.
+ *
  * Each priority has its own channel, so they can be tuned separately in Android's settings.
  * The channels are silent: AlertPlayer plays the message's own sound on the right stream.
  */
@@ -129,6 +131,7 @@ object FlareNotifier {
     val intent = Intent(context, ActionReceiver::class.java).setAction(action)
       .putExtra(ActionReceiver.EXTRA_TAG, p.tag)
       .putExtra(ActionReceiver.EXTRA_RECEIPT, p.receipt)
+      .putExtra(ActionReceiver.EXTRA_DELIVERY_ID, p.deliveryId)
     return PendingIntent.getBroadcast(context, p.tag.hashCode() + requestOffset, intent, flags())
   }
 
@@ -177,6 +180,8 @@ object FlareNotifier {
     if (p.urgent && p.receipt != null) {
       builder.addAction(0, "Acknowledge", actionIntent(context, ActionReceiver.ACTION_ACK, p, 1))
       if (p.attempt > 1) builder.setSubText("Repeat ${p.attempt}")
+    } else if (p.deliveryId != null) {
+      builder.addAction(0, "Mark read", actionIntent(context, ActionReceiver.ACTION_READ, p, 4))
     }
     val link = p.url?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
     if (link != null) {

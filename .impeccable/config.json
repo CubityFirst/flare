@@ -1,0 +1,50 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "low-contrast",
+        "value": "*",
+        "files": [
+          "design/logos/overview.html"
+        ],
+        "createdAt": "2026-11-23T01:01:08.143Z",
+        "reason": "assistant: overview.html is only shown via html_render, which forbids a page background and supplies theme vars; the #fff ground exists only in the bare-file scan"
+      },
+      {
+        "rule": "low-contrast",
+        "value": "*",
+        "files": [
+          "design/logos/iter/results.html"
+        ],
+        "createdAt": "2026-11-23T01:46:21.340Z",
+        "reason": "assistant: results.html is only shown via html_render, which forbids a page background and supplies theme vars; the #fff ground exists only in the bare-file scan"
+      },
+      {
+        "rule": "low-contrast",
+        "value": "*",
+        "files": [
+          "design/logos/r2/results.html"
+        ],
+        "createdAt": "2026-11-23T02:15:32.991Z",
+        "reason": "assistant: results.html is only shown via html_render, which forbids a page background and supplies theme vars; the #fff ground exists only in the bare-file scan"
+      },
+      {
+        "rule": "overused-font",
+        "value": "geist",
+        "createdAt": "2026-11-24T20:11:01.143Z",
+        "reason": "agent decision: Geist is Flare's existing UI font (src/index.css --font-sans); the README banner matches the app's wordmark"
+      },
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          "assets/readme-header.html"
+        ],
+        "createdAt": "2026-11-24T20:11:01.228Z",
+        "reason": "agent decision: fixed 1280x320 banner with a centred lockup; the rendered PNG shows ~100px+ clearance on every side, flag comes from the line-height:1 wordmark box"
+      }
+    ]
+  }
+}

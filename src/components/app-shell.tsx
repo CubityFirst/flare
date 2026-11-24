@@ -174,7 +174,7 @@ function AppSidebar() {
             <SidebarMenuButton size="lg" asChild>
               <NavLink to="/">
                 <FlareMark className="size-8 shrink-0" />
-                <span className="text-base font-semibold tracking-tight">Flare</span>
+                <span className="text-base font-semibold tracking-tight group-data-[collapsible=icon]:hidden">Flare</span>
               </NavLink>
             </SidebarMenuButton>
           </SidebarMenuItem>

@@ -1,4 +1,4 @@
-/* Flare service worker: shows push notifications and handles clicks and acknowledgements. */
+/* Flare service worker: shows push notifications and handles clicks, Mark read and acknowledgements. */
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
@@ -26,6 +26,7 @@ self.addEventListener("push", (event) => {
       const urgent = data.priority === 2;
       const actions = [];
       if (urgent && data.receipt) actions.push({ action: "ack", title: "Acknowledge" });
+      else if (data.deliveryId) actions.push({ action: "read", title: "Mark read" });
       if (data.url) actions.push({ action: "open-url", title: "Open link" });
 
       // iOS and Chrome require every push to show a notification, so always show one.
@@ -79,6 +80,21 @@ self.addEventListener("notificationclick", (event) => {
             .then((ws) => ws.forEach((w) => w.postMessage({ type: "flare:refresh" })));
         })
         .catch(() => openApp(itemPath)),
+    );
+    return;
+  }
+
+  if (event.action === "read" && data.deliveryId) {
+    // The notification is already closed. If this fails the message just stays unread in the feed.
+    event.waitUntil(
+      fetch(`/api/feed/${encodeURIComponent(data.deliveryId)}/read`, {
+        method: "POST",
+        headers: { "x-flare": "1" },
+        credentials: "same-origin",
+      })
+        .then(() => self.clients.matchAll({ type: "window", includeUncontrolled: true }))
+        .then((ws) => ws.forEach((w) => w.postMessage({ type: "flare:refresh" })))
+        .catch(() => {}),
     );
     return;
   }

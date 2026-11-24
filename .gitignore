@@ -13,3 +13,8 @@ dist
 .prod.secrets
 # OIDC client credentials and registration token (scripts/oidc-client.mjs)
 .oidc.secrets
+
+# Logo exploration (kept local)
+design/
+# Impeccable design-hook cache
+.impeccable/hook.cache.json

@@ -7,20 +7,47 @@ import android.net.Uri
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import org.json.JSONObject
 
-/** Notification buttons: Acknowledge (urgent alerts) and swipe-away (stops the sound). */
+/**
+ * Notification buttons: Acknowledge (urgent alerts), Mark read (everything else) and
+ * swipe-away (stops the sound).
+ */
 class ActionReceiver : BroadcastReceiver() {
   companion object {
     const val ACTION_ACK = "st.cubityfir.flare.push.ACK"
+    const val ACTION_READ = "st.cubityfir.flare.push.READ"
     const val ACTION_DISMISSED = "st.cubityfir.flare.push.DISMISSED"
     const val EXTRA_TAG = "tag"
     const val EXTRA_RECEIPT = "receipt"
+    const val EXTRA_DELIVERY_ID = "deliveryId"
   }
 
   override fun onReceive(context: Context, intent: Intent) {
     val tag = intent.getStringExtra(EXTRA_TAG) ?: return
     when (intent.action) {
       ACTION_DISMISSED -> AlertPlayer.stopIfTag(tag)
+      ACTION_READ -> {
+        // Clear it straight away; if the server call fails the message just stays unread in the feed.
+        AlertPlayer.stopIfTag(tag)
+        NotificationManagerCompat.from(context).cancel(tag, 0)
+        val deliveryId = intent.getStringExtra(EXTRA_DELIVERY_ID) ?: return
+        val pending = goAsync()
+        Thread {
+          try {
+            val status = Api.post(context, "/api/feed/${Uri.encode(deliveryId)}/read")
+            if (status in 200..299) {
+              FlarePushModule.emitMessage(JSONObject().put("type", "read").put("deliveryId", deliveryId).toString())
+            } else {
+              Log.w("FlareActions", "Mark read answered $status")
+            }
+          } catch (e: Exception) {
+            Log.w("FlareActions", "Mark read failed", e)
+          } finally {
+            pending.finish()
+          }
+        }.start()
+      }
       ACTION_ACK -> {
         AlertPlayer.stopIfTag(tag)
         val receipt = intent.getStringExtra(EXTRA_RECEIPT) ?: return

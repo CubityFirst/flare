@@ -1,4 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#c026d3"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="32" font-weight="600" fill="#ffffff">F</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="0.50" cy="0.42" r="0.78" fx="0.50" fy="0.42">
+      <stop offset="0" stop-color="#8619a8"/>
+      <stop offset="0.30" stop-color="#420c60"/>
+      <stop offset="0.68" stop-color="#1a052a"/>
+      <stop offset="1" stop-color="#0b0214"/>
+    </radialGradient>
+    <linearGradient id="plume" gradientUnits="userSpaceOnUse" x1="126" y1="436" x2="266" y2="188">
+      <stop offset="0" stop-color="#c026d3"/>
+      <stop offset="0.34" stop-color="#df28bf"/>
+      <stop offset="0.62" stop-color="#f43f7e"/>
+      <stop offset="0.82" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#fde047"/>
+    </linearGradient>
+    <radialGradient id="core" gradientUnits="userSpaceOnUse" cx="256" cy="216" r="136">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.28" stop-color="#fffbeb" stop-opacity="1"/>
+      <stop offset="0.56" stop-color="#fef08a" stop-opacity="0.88"/>
+      <stop offset="0.80" stop-color="#fbbf24" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#fb923c" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="arcL" gradientUnits="userSpaceOnUse" x1="106" y1="260" x2="184" y2="78">
+      <stop offset="0" stop-color="#c026d3"/>
+      <stop offset="0.48" stop-color="#e8369f"/>
+      <stop offset="0.85" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#fbbf24"/>
+    </linearGradient>
+    <linearGradient id="arcR" gradientUnits="userSpaceOnUse" x1="406" y1="260" x2="328" y2="78">
+      <stop offset="0" stop-color="#c026d3"/>
+      <stop offset="0.48" stop-color="#e8369f"/>
+      <stop offset="0.85" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#fbbf24"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <path d="M102.2 260.1 A139.1 139.1 0 0 1 176 77.4 A8 8 0 0 1 184 91.3 A178.9 178.9 0 0 0 117.6 255.7 A8 8 0 0 1 102.2 260.1 Z" fill="url(#arcL)"/>
+  <path d="M336 77.4 A139.1 139.1 0 0 1 409.8 260.1 A8 8 0 0 1 394.4 255.7 A178.9 178.9 0 0 0 328 91.3 A8 8 0 0 1 336 77.4 Z" fill="url(#arcR)"/>
+  <path d="M256 66 C272 152 300 198 364 216 C300 234 272 268 256 336 C251 316 245 298 238 284 C198 320 166 364 142 424 C136 434 122 428 126 417 C138 336 162 276 194 235 C181 227 166 221 148 216 C212 198 240 152 256 66 Z" fill="url(#plume)"/>
+  <path d="M256 66 C272 152 300 198 364 216 C300 234 272 268 256 336 C251 316 245 298 238 284 C198 320 166 364 142 424 C136 434 122 428 126 417 C138 336 162 276 194 235 C181 227 166 221 148 216 C212 198 240 152 256 66 Z" fill="url(#core)"/>
 </svg>

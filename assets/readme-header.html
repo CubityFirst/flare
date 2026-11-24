@@ -1,0 +1,42 @@
+<!doctype html>
+<!--
+  Source for readme-header.png, the banner at the top of README.md.
+  Regenerate with scripts/readme-header.sh after changing it (needs node_modules for the Geist font).
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face {
+    font-family: "Geist";
+    src: url("../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2") format("woff2");
+    font-weight: 100 900;
+  }
+  html, body { margin: 0; background: transparent; }
+  body { width: 1280px; height: 320px; font-family: "Geist", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; }
+
+  .banner {
+    width: 1280px; height: 320px; border-radius: 24px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: #120a18;
+    background-image:
+      radial-gradient(ellipse 380px 200px at 560px 150px, rgba(251,146,60,.10), transparent 70%),
+      radial-gradient(ellipse 620px 280px at 640px 160px, rgba(192,38,211,.20), transparent 70%),
+      linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
+    background-size: auto, auto, 32px 32px, 32px 32px;
+  }
+  .lockup { display: flex; align-items: center; gap: 34px; }
+  .lockup img { width: 120px; height: 120px; display: block; }
+  .word { font-size: 128px; font-weight: 650; letter-spacing: -5px; color: #fff; line-height: 1; margin-top: -10px; }
+</style>
+</head>
+<body>
+<div class="banner">
+  <div class="lockup">
+    <img src="../public/icon.svg" alt="">
+    <div class="word">Flare</div>
+  </div>
+</div>
+</body>
+</html>
