@@ -1,21 +1,22 @@
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { type InfiniteData, type QueryClient, useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
   BellRing,
   CheckCheck,
   CheckCircle2,
+  ChevronRight,
   ExternalLink,
   Inbox,
   Mail,
   MailOpen,
   MoreHorizontal,
   Siren,
-  Trash2,
   Volume2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
-import type { FeedItem } from "@shared/types";
+import type { FeedItem, FeedPage as FeedPageData } from "@shared/types";
 import { PageHeader } from "@/components/page";
 import { PriorityIcon, priorityAccent } from "@/components/priority";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +30,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SwipeRow } from "@/components/swipe-row";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, errorMessage } from "@/lib/api";
 import { dateTime, timeAgo } from "@/lib/format";
@@ -36,12 +38,21 @@ import { sanitizeHtml } from "@/lib/html";
 import { playSound } from "@/lib/sounds";
 import { cn } from "@/lib/utils";
 
-function isActiveUrgent(item: FeedItem) {
+export function isActiveUrgent(item: FeedItem) {
   const r = item.receipt;
   return Boolean(r && !r.acknowledged && !r.expired && !r.cancelled);
 }
 
-function MessageBody({ item }: { item: FeedItem }) {
+/** Takes an item out of every cached feed list straight away, so a swiped row doesn't flash back. */
+export function dropFromFeeds(qc: QueryClient, id: string) {
+  qc.setQueriesData<InfiniteData<FeedPageData>>({ queryKey: ["feed"] }, (data) =>
+    data?.pages
+      ? { ...data, pages: data.pages.map((p) => ({ ...p, items: p.items.filter((i) => i.id !== id) })) }
+      : data,
+  );
+}
+
+export function MessageBody({ item }: { item: FeedItem }) {
   const html = useMemo(() => (item.html ? sanitizeHtml(item.body) : null), [item.html, item.body]);
   if (html !== null) {
     return <div className="message-html text-sm break-words whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: html }} />;
@@ -69,18 +80,19 @@ function FeedRow({
   highlighted,
   onAck,
   acking,
+  onArchive,
 }: {
   item: FeedItem;
   highlighted: boolean;
   onAck: (item: FeedItem) => void;
   acking: boolean;
+  onArchive: (item: FeedItem) => void;
 }) {
   const qc = useQueryClient();
   const ref = useRef<HTMLLIElement>(null);
   const refresh = () => qc.invalidateQueries({ queryKey: ["feed"] });
   const markRead = useMutation({ mutationFn: () => api.markRead(item.id), onSuccess: refresh });
   const markUnread = useMutation({ mutationFn: () => api.markUnread(item.id), onSuccess: refresh });
-  const remove = useMutation({ mutationFn: () => api.deleteItem(item.id), onSuccess: refresh });
   const urgent = isActiveUrgent(item);
   const unread = !item.readAt;
 
@@ -91,101 +103,145 @@ function FeedRow({
   const meta = [item.appName, item.groupName ? `via ${item.groupName}` : null].filter(Boolean).join(" · ");
 
   return (
-    <li
-      ref={ref}
-      onClick={() => unread && !urgent && markRead.mutate()}
-      className={cn(
-        "relative flex gap-3 rounded-xl border bg-card p-4 transition-colors before:absolute before:inset-y-3 before:left-0 before:w-1 before:rounded-full",
-        priorityAccent(item.priority),
-        unread ? "border-border" : "border-transparent bg-transparent",
-        urgent && "border-red-500/40 bg-red-500/5",
-        highlighted && "ring-2 ring-primary/50",
-      )}
-    >
-      <div className="flex w-2 shrink-0 justify-center pt-1.5">
-        {unread && <span className="size-2 rounded-full bg-primary" aria-label="Unread" />}
-      </div>
-      <div className="min-w-0 flex-1 space-y-1.5">
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              {item.priority !== 0 && <PriorityIcon priority={item.priority} className="shrink-0" />}
-              <h3 className={cn("truncate text-sm", unread ? "font-semibold" : "font-medium")}>
-                {item.title || item.appName || "Message"}
-              </h3>
-            </div>
-            {meta && <p className="truncate text-xs text-muted-foreground">{meta}</p>}
+    <li ref={ref}>
+      <SwipeRow
+        // Urgent alerts that are still repeating stay put until they're acknowledged.
+        left={
+          urgent
+            ? undefined
+            : unread
+              ? { label: "Read", icon: <MailOpen className="size-4" />, className: "bg-sky-600", onSwipe: () => markRead.mutate() }
+              : { label: "Unread", icon: <Mail className="size-4" />, className: "bg-sky-600", onSwipe: () => markUnread.mutate() }
+        }
+        right={
+          urgent
+            ? undefined
+            : {
+                label: "Archive",
+                icon: <Archive className="size-4" />,
+                className: "bg-zinc-600",
+                onSwipe: () => onArchive(item),
+                removes: true,
+              }
+        }
+      >
+        <div
+          onClick={() => unread && !urgent && markRead.mutate()}
+          className={cn(
+            "group relative flex gap-3 rounded-xl border bg-card p-4 transition-colors before:absolute before:inset-y-3 before:left-0 before:w-1 before:rounded-full",
+            priorityAccent(item.priority),
+            // Read rows sit flush with the page, but stay opaque so a swipe slides them over the action strip.
+            unread ? "border-border" : "border-transparent bg-background",
+            urgent && "border-red-500/40 bg-red-500/5",
+            highlighted && "ring-2 ring-primary/50 ring-inset",
+          )}
+        >
+          <div className="flex w-2 shrink-0 justify-center pt-1.5">
+            {unread && <span className="size-2 rounded-full bg-primary" aria-label="Unread" />}
           </div>
-          <time className="shrink-0 pt-0.5 text-xs text-muted-foreground" title={dateTime(item.createdAt)}>
-            {timeAgo(item.createdAt)}
-          </time>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-xs" aria-label="Message actions" onClick={(e) => e.stopPropagation()}>
-                <MoreHorizontal />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-              {unread ? (
-                <DropdownMenuItem onSelect={() => markRead.mutate()}>
-                  <MailOpen /> Mark as read
-                </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem onSelect={() => markUnread.mutate()}>
-                  <Mail /> Mark as unread
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem onSelect={() => playSound(item.sound, item.soundUrl)}>
-                <Volume2 /> Play sound
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onSelect={() => remove.mutate()}>
-                <Trash2 /> Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-
-        <MessageBody item={item} />
-
-        {item.url && (
-          <a
-            href={item.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="inline-flex max-w-full items-center gap-1 text-sm font-medium text-primary hover:underline"
-          >
-            <ExternalLink className="size-3.5 shrink-0" />
-            <span className="truncate">{item.urlTitle || item.url}</span>
-          </a>
-        )}
-
-        {item.receipt && (
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            {urgent ? (
-              <>
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <div className="flex items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  {item.priority !== 0 && <PriorityIcon priority={item.priority} className="shrink-0" />}
+                  <h3 className={cn("truncate text-sm", unread ? "font-semibold" : "font-medium")}>
+                    {item.title || item.appName || "Message"}
+                  </h3>
+                </div>
+                {meta && <p className="truncate text-xs text-muted-foreground">{meta}</p>}
+              </div>
+              <time className="shrink-0 pt-0.5 text-xs text-muted-foreground" title={dateTime(item.createdAt)}>
+                {timeAgo(item.createdAt)}
+              </time>
+              {!urgent && (
+                // One-click archive for mouse users; touch screens swipe instead.
                 <Button
-                  size="sm"
-                  className="bg-red-600 text-white hover:bg-red-700"
-                  disabled={acking}
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Archive"
+                  title="Archive"
+                  className="hidden opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:hover)]:inline-flex"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onAck(item);
+                    onArchive(item);
                   }}
                 >
-                  <CheckCheck /> Acknowledge
+                  <Archive />
                 </Button>
-                <span className="text-xs text-muted-foreground">
-                  Repeating until acknowledged · sent {item.receipt.sentCount}×
-                </span>
-              </>
-            ) : (
-              <ReceiptStatus item={item} />
+              )}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon-xs" aria-label="Message actions" onClick={(e) => e.stopPropagation()}>
+                    <MoreHorizontal />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                  {unread ? (
+                    <DropdownMenuItem onSelect={() => markRead.mutate()}>
+                      <MailOpen /> Mark as read
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem onSelect={() => markUnread.mutate()}>
+                      <Mail /> Mark as unread
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onSelect={() => playSound(item.sound, item.soundUrl)}>
+                    <Volume2 /> Play sound
+                  </DropdownMenuItem>
+                  {!urgent && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onSelect={() => onArchive(item)}>
+                        <Archive /> Archive
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            <MessageBody item={item} />
+
+            {item.url && (
+              <a
+                href={item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex max-w-full items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                <ExternalLink className="size-3.5 shrink-0" />
+                <span className="truncate">{item.urlTitle || item.url}</span>
+              </a>
+            )}
+
+            {item.receipt && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {urgent ? (
+                  <>
+                    <Button
+                      size="sm"
+                      className="bg-red-600 text-white hover:bg-red-700"
+                      disabled={acking}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAck(item);
+                      }}
+                    >
+                      <CheckCheck /> Acknowledge
+                    </Button>
+                    <span className="text-xs text-muted-foreground">
+                      Repeating until acknowledged · sent {item.receipt.sentCount}×
+                    </span>
+                  </>
+                ) : (
+                  <ReceiptStatus item={item} />
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      </SwipeRow>
     </li>
   );
 }
@@ -248,10 +304,33 @@ export function FeedPage() {
     mutationFn: api.markAllRead,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["feed"] }),
   });
-  const clearRead = useMutation({
-    mutationFn: api.clearRead,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["feed"] }),
+  const archiveRead = useMutation({
+    mutationFn: api.archiveRead,
+    onSuccess: () => toast.success("Read messages archived"),
+    onError: (e) => toast.error(errorMessage(e)),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["feed"] }),
   });
+  // Archive and undo share a scope, so an undo waits for the archive it reverses.
+  const restore = useMutation({
+    scope: { id: "feed-archive" },
+    mutationFn: (item: FeedItem) => api.restoreItem(item.id),
+    onError: (e) => toast.error(errorMessage(e)),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["feed"] }),
+  });
+  const archive = useMutation({
+    scope: { id: "feed-archive" },
+    mutationFn: (item: FeedItem) => api.archiveItem(item.id),
+    onMutate: (item) => {
+      dropFromFeeds(qc, item.id);
+      toast("Archived", {
+        description: item.title || item.appName || undefined,
+        action: { label: "Undo", onClick: () => restore.mutate(item) },
+      });
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["feed"] }),
+  });
+  const archivedCount = feed.data?.pages[0]?.archived ?? 0;
 
   return (
     <>
@@ -270,8 +349,13 @@ export function FeedPage() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem variant="destructive" onSelect={() => clearRead.mutate()}>
-                  <Trash2 /> Clear read messages
+                <DropdownMenuItem onSelect={() => archiveRead.mutate()}>
+                  <Archive /> Archive read messages
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link to="/archive">
+                    <Inbox /> Open archive
+                  </Link>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -344,6 +428,7 @@ export function FeedPage() {
                 highlighted={item.id === highlight}
                 onAck={(i) => ack.mutate(i)}
                 acking={ack.isPending}
+                onArchive={(i) => archive.mutate(i)}
               />
             ))}
           </ul>
@@ -356,6 +441,22 @@ export function FeedPage() {
           )}
         </>
       )}
+
+      {!feed.isPending && !feed.hasNextPage && archivedCount > 0 && <ArchiveLink count={archivedCount} />}
     </>
+  );
+}
+
+function ArchiveLink({ count }: { count: number }) {
+  return (
+    <Link
+      to="/archive"
+      className="mt-6 flex items-center gap-3 rounded-xl border border-dashed px-4 py-3 text-sm text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+    >
+      <Archive className="size-4 shrink-0" />
+      <span className="flex-1">Archive</span>
+      <span className="tabular-nums">{count}</span>
+      <ChevronRight className="size-4 shrink-0" />
+    </Link>
   );
 }

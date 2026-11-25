@@ -143,6 +143,8 @@ export interface FeedItem {
   groupName: string | null;
   createdAt: number;
   readAt: number | null;
+  /** When the recipient archived it (swiped it away). Archived items only show in the archive. */
+  archivedAt: number | null;
   receipt: Receipt | null;
 }
 
@@ -150,6 +152,8 @@ export interface FeedPage {
   items: FeedItem[];
   nextCursor: string | null;
   unread: number;
+  /** How many messages are in the archive. */
+  archived: number;
 }
 
 /** Request body for sending a message (API key or session). */

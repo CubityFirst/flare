@@ -27,7 +27,7 @@ const ME: Me = {
   appName: "Flare",
 };
 
-const PATHS = ["/", "/send", "/devices", "/apps", "/groups", "/groups/g1", "/sounds", "/docs", "/admin", "/nope"];
+const PATHS = ["/", "/archive", "/send", "/devices", "/apps", "/groups", "/groups/g1", "/sounds", "/docs", "/admin", "/nope"];
 
 beforeAll(() => {
   // Pages read a few browser globals during render; give them inert stand-ins.

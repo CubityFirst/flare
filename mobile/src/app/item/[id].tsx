@@ -3,6 +3,7 @@ import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect } from "react";
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { Receipt } from "../../../../shared/types";
+import { useSnackbar } from "../../components/snackbar";
 import { Button, Centered, PriorityBadge } from "../../components/ui";
 import { fullTime, plainText } from "../../lib/format";
 import { useFeedActions, useFeedItem } from "../../lib/queries";
@@ -13,7 +14,8 @@ export default function Item() {
   const c = useColors();
   const router = useRouter();
   const item = useFeedItem(id);
-  const { markRead, markUnread, remove, acknowledge } = useFeedActions();
+  const snack = useSnackbar();
+  const { markRead, markUnread, archive, restore, deleteForever, acknowledge } = useFeedActions();
   const data = item.data;
 
   // Opening a message reads it, as in the web app.
@@ -30,7 +32,7 @@ export default function Item() {
         ) : (
           <>
             <Text style={[styles.title, { color: c.text }]}>Message not found</Text>
-            <Text style={{ color: c.muted }}>It may have expired or been deleted.</Text>
+            <Text style={{ color: c.muted }}>It may have expired or been deleted for good.</Text>
           </>
         )}
       </Centered>
@@ -47,39 +49,69 @@ export default function Item() {
     <>
       <Stack.Screen
         options={{
-          headerRight: () => (
-            <View style={{ flexDirection: "row", gap: 20 }}>
-              <Pressable
-                accessibilityLabel="Mark unread"
-                hitSlop={10}
-                onPress={() => {
-                  markUnread.mutate(data.id);
-                  router.back();
-                }}
-              >
-                <MaterialCommunityIcons name="email-mark-as-unread" size={22} color={c.text} />
-              </Pressable>
-              <Pressable
-                accessibilityLabel="Delete"
-                hitSlop={10}
-                onPress={() =>
-                  Alert.alert("Delete this message?", "It's removed from your feed only.", [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Delete",
-                      style: "destructive",
-                      onPress: () => {
-                        remove.mutate(data.id);
-                        router.back();
+          headerRight: () =>
+            data.archivedAt !== null ? (
+              <View style={{ flexDirection: "row", gap: 20 }}>
+                <Pressable
+                  accessibilityLabel="Move back to the feed"
+                  hitSlop={10}
+                  onPress={() => {
+                    restore.mutate(data.id, { onError: (e) => snack(`Couldn't restore: ${e.message}`) });
+                    snack("Moved back to the feed");
+                    router.back();
+                  }}
+                >
+                  <MaterialCommunityIcons name="archive-arrow-up-outline" size={22} color={c.text} />
+                </Pressable>
+                <Pressable
+                  accessibilityLabel="Delete for good"
+                  hitSlop={10}
+                  onPress={() =>
+                    Alert.alert("Delete this message for good?", "It's removed from your archive and can't be brought back.", [
+                      { text: "Cancel", style: "cancel" },
+                      {
+                        text: "Delete",
+                        style: "destructive",
+                        onPress: () => {
+                          deleteForever.mutate(data.id, { onError: (e) => snack(`Couldn't delete: ${e.message}`) });
+                          router.back();
+                        },
                       },
-                    },
-                  ])
-                }
-              >
-                <MaterialCommunityIcons name="trash-can-outline" size={22} color={c.text} />
-              </Pressable>
-            </View>
-          ),
+                    ])
+                  }
+                >
+                  <MaterialCommunityIcons name="delete-forever-outline" size={22} color={c.text} />
+                </Pressable>
+              </View>
+            ) : (
+              <View style={{ flexDirection: "row", gap: 20 }}>
+                <Pressable
+                  accessibilityLabel="Mark unread"
+                  hitSlop={10}
+                  onPress={() => {
+                    markUnread.mutate(data.id);
+                    router.back();
+                  }}
+                >
+                  <MaterialCommunityIcons name="email-mark-as-unread" size={22} color={c.text} />
+                </Pressable>
+                {/* An urgent alert that is still repeating has to be acknowledged, not filed away. */}
+                {pendingAck ? null : (
+                  <Pressable
+                    accessibilityLabel="Archive"
+                    hitSlop={10}
+                    onPress={() => {
+                      const id = data.id;
+                      archive.mutate(id, { onError: (e) => snack(`Couldn't archive: ${e.message}`) });
+                      snack("Archived", { label: "Undo", onPress: () => restore.mutate(id) });
+                      router.back();
+                    }}
+                  >
+                    <MaterialCommunityIcons name="archive-arrow-down-outline" size={22} color={c.text} />
+                  </Pressable>
+                )}
+              </View>
+            ),
         }}
       />
       <ScrollView contentContainerStyle={styles.content}>

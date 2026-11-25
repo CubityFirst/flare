@@ -57,10 +57,11 @@ export const api = {
   me: () => get<Me>("/api/me"),
   logout: () => post<{ ok: true; redirect: string | null }>("/auth/logout"),
 
-  feed: (params: { cursor?: string | null; unread?: boolean }) => {
+  feed: (params: { cursor?: string | null; unread?: boolean; archived?: boolean }) => {
     const q = new URLSearchParams();
     if (params.cursor) q.set("cursor", params.cursor);
     if (params.unread) q.set("unread", "1");
+    if (params.archived) q.set("archived", "1");
     return get<FeedPage>(`/api/feed?${q}`);
   },
   feedItem: (id: string) => get<FeedItem>(`/api/feed/${id}`),
@@ -68,8 +69,11 @@ export const api = {
   markRead: (id: string) => post(`/api/feed/${id}/read`),
   markUnread: (id: string) => post(`/api/feed/${id}/unread`),
   markAllRead: () => post("/api/feed/read-all"),
-  clearRead: () => post("/api/feed/clear-read"),
-  deleteItem: (id: string) => del(`/api/feed/${id}`),
+  archiveRead: () => post("/api/feed/archive-read"),
+  archiveItem: (id: string) => post(`/api/feed/${id}/archive`),
+  restoreItem: (id: string) => post(`/api/feed/${id}/restore`),
+  deleteForever: (id: string) => del(`/api/feed/archive/${id}`),
+  emptyArchive: () => del("/api/feed/archive"),
   acknowledge: (receiptId: string) => post(`/api/receipts/${receiptId}/ack`),
 
   send: (body: SendMessageRequest) => post<SendMessageResponse>("/api/messages", body),

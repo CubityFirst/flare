@@ -3,6 +3,7 @@ import { AppShell } from "@/components/app-shell";
 import { AuthGate } from "@/components/auth-gate";
 import { AdminPage } from "@/pages/admin";
 import { AppsPage } from "@/pages/apps";
+import { ArchivePage } from "@/pages/archive";
 import { DevicesPage } from "@/pages/devices";
 import { DocsPage } from "@/pages/docs";
 import { FeedPage } from "@/pages/feed";
@@ -20,6 +21,7 @@ export const routes: RouteObject[] = [
         element: <AppShell />,
         children: [
           { index: true, element: <FeedPage /> },
+          { path: "archive", element: <ArchivePage /> },
           { path: "send", element: <SendPage /> },
           { path: "devices", element: <DevicesPage /> },
           { path: "apps", element: <AppsPage /> },

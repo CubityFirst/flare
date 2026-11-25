@@ -1,11 +1,14 @@
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { Link, Stack, useRouter } from "expo-router";
 import { useMemo } from "react";
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
+import Animated, { LinearTransition } from "react-native-reanimated";
 import type { FeedItem } from "../../../shared/types";
-import { Button, Centered, PriorityBadge } from "../components/ui";
+import { FeedRow, FeedSeparator, isPendingUrgent } from "../components/feed-row";
+import { useSnackbar } from "../components/snackbar";
+import { ARCHIVE_GREY, SwipeRow } from "../components/swipe-row";
+import { Button, Centered } from "../components/ui";
 import { ApiError } from "../lib/api";
-import { plainText, shortTime } from "../lib/format";
 import { useFeed, useFeedActions, useLiveFeed, useMe, usePushRegistration } from "../lib/queries";
 import { useSession } from "../lib/session";
 import { useColors } from "../lib/theme";
@@ -85,9 +88,17 @@ function FeedList() {
   const c = useColors();
   const router = useRouter();
   const feed = useFeed();
-  const { readAll } = useFeedActions();
+  const snack = useSnackbar();
+  const { readAll, markRead, markUnread, archive, restore, archiveRead } = useFeedActions();
   const items = useMemo(() => feed.data?.pages.flatMap((p) => p.items) ?? [], [feed.data]);
   const unread = feed.data?.pages[0]?.unread ?? 0;
+  const archived = feed.data?.pages[0]?.archived ?? 0;
+  const anyRead = items.some((i) => i.readAt !== null && !isPendingUrgent(i));
+
+  function archiveItem(item: FeedItem) {
+    archive.mutate(item.id, { onError: (e) => snack(`Couldn't archive: ${e.message}`) });
+    snack("Archived", { label: "Undo", onPress: () => restore.mutate(item.id) });
+  }
 
   if (feed.isPending) {
     return (
@@ -109,11 +120,34 @@ function FeedList() {
   }
 
   return (
-    <FlatList
+    <Animated.FlatList
       data={items}
       keyExtractor={(i) => i.id}
-      renderItem={({ item }) => <FeedRow item={item} onPress={() => router.push(`/item/${item.id}`)} />}
-      ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: c.border }]} />}
+      // Rows below a swiped-away message slide up into its place.
+      itemLayoutAnimation={LinearTransition.duration(200)}
+      renderItem={({ item }) => {
+        // Urgent alerts that are still repeating stay put until they're acknowledged.
+        const locked = isPendingUrgent(item);
+        return (
+          <SwipeRow
+            left={
+              locked
+                ? undefined
+                : item.readAt === null
+                  ? { label: "Read", icon: "email-open-outline", color: c.accent, onSwipe: () => markRead.mutate(item.id) }
+                  : { label: "Unread", icon: "email-outline", color: c.accent, onSwipe: () => markUnread.mutate(item.id) }
+            }
+            right={
+              locked
+                ? undefined
+                : { label: "Archive", icon: "archive-arrow-down-outline", color: ARCHIVE_GREY, onSwipe: () => archiveItem(item), removes: true }
+            }
+          >
+            <FeedRow item={item} onPress={() => router.push(`/item/${item.id}`)} />
+          </SwipeRow>
+        );
+      }}
+      ItemSeparatorComponent={FeedSeparator}
       refreshControl={
         <RefreshControl refreshing={feed.isRefetching && !feed.isFetchingNextPage} onRefresh={() => void feed.refetch()} colors={[c.accent]} />
       }
@@ -122,79 +156,83 @@ function FeedList() {
         if (feed.hasNextPage && !feed.isFetchingNextPage) void feed.fetchNextPage();
       }}
       ListHeaderComponent={
-        unread > 0 ? (
+        unread > 0 || anyRead ? (
           <View style={styles.listHeader}>
-            <Text style={{ color: c.muted, fontSize: 14 }}>{unread} unread</Text>
-            <Pressable onPress={() => readAll.mutate()} hitSlop={8}>
-              <Text style={{ color: c.accent, fontSize: 14, fontWeight: "600" }}>Mark all read</Text>
-            </Pressable>
+            <Text style={{ color: c.muted, fontSize: 14, flex: 1 }}>{unread > 0 ? `${unread} unread` : ""}</Text>
+            {unread > 0 ? (
+              <Pressable onPress={() => readAll.mutate()} hitSlop={8}>
+                <Text style={[styles.headerAction, { color: c.accent }]}>Mark all read</Text>
+              </Pressable>
+            ) : null}
+            {anyRead ? (
+              <Pressable
+                onPress={() =>
+                  archiveRead.mutate(undefined, {
+                    onSuccess: () => snack("Read messages archived"),
+                    onError: (e) => snack(`Couldn't archive: ${e.message}`),
+                  })
+                }
+                hitSlop={8}
+              >
+                <Text style={[styles.headerAction, { color: c.accent }]}>Archive read</Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : undefined
       }
-      ListFooterComponent={feed.isFetchingNextPage ? <ActivityIndicator style={{ margin: 16 }} color={c.accent} /> : undefined}
+      ListFooterComponent={
+        feed.isFetchingNextPage ? (
+          <ActivityIndicator style={{ margin: 16 }} color={c.accent} />
+        ) : !feed.hasNextPage && archived > 0 ? (
+          <ArchiveLink count={archived} onPress={() => router.push("/archive")} />
+        ) : undefined
+      }
       ListEmptyComponent={
         <View style={styles.empty}>
-          <MaterialCommunityIcons name="bell-outline" size={48} color={c.muted} />
-          <Text style={[styles.emptyTitle, { color: c.text }]}>No messages yet</Text>
+          <MaterialCommunityIcons name={archived > 0 ? "check-all" : "bell-outline"} size={48} color={c.muted} />
+          <Text style={[styles.emptyTitle, { color: c.text }]}>{archived > 0 ? "All caught up" : "No messages yet"}</Text>
           <Text style={[styles.emptyText, { color: c.muted }]}>
-            Messages sent to you show up here. Send yourself a test from Settings.
+            {archived > 0
+              ? "New messages show up here. Older ones are in the archive."
+              : "Messages sent to you show up here. Send yourself a test from Settings."}
           </Text>
         </View>
       }
-      contentContainerStyle={items.length === 0 ? { flexGrow: 1 } : { paddingBottom: 24 }}
+      contentContainerStyle={items.length === 0 ? { flexGrow: 1 } : { paddingBottom: 32 }}
     />
   );
 }
 
-function FeedRow({ item, onPress }: { item: FeedItem; onPress: () => void }) {
+function ArchiveLink({ count, onPress }: { count: number; onPress: () => void }) {
   const c = useColors();
-  const unread = item.readAt === null;
-  const pendingAck = item.receipt && !item.receipt.acknowledged && !item.receipt.expired && !item.receipt.cancelled;
-  const source = [item.appName ?? item.senderName, item.groupName && `to ${item.groupName}`].filter(Boolean).join(" · ");
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="link"
+      accessibilityLabel={`Archive, ${count} ${count === 1 ? "message" : "messages"}`}
       android_ripple={{ color: "rgba(127,127,127,0.15)" }}
-      style={[styles.row, pendingAck && { backgroundColor: c.dangerSoft }]}
+      style={[styles.archiveLink, { borderTopColor: c.border }]}
     >
-      <View style={[styles.dot, { backgroundColor: unread ? c.accent : "transparent" }]} />
-      <View style={{ flex: 1, gap: 3 }}>
-        <View style={styles.rowTop}>
-          <Text numberOfLines={1} style={[styles.source, { color: c.muted }]}>
-            {source || "Flare"}
-          </Text>
-          <Text style={[styles.time, { color: c.muted }]}>{shortTime(item.createdAt)}</Text>
-        </View>
-        {item.title ? (
-          <Text numberOfLines={1} style={[styles.title, { color: c.text, fontWeight: unread ? "700" : "500" }]}>
-            {item.title}
-          </Text>
-        ) : null}
-        <Text numberOfLines={3} style={[styles.body, { color: item.title ? c.muted : c.text }]}>
-          {plainText(item.body, item.html)}
-        </Text>
-        {item.priority !== 0 || pendingAck ? (
-          <View style={styles.badges}>
-            <PriorityBadge priority={item.priority} />
-            {pendingAck ? <Text style={{ color: c.danger, fontSize: 12, fontWeight: "600" }}>Needs acknowledging</Text> : null}
-          </View>
-        ) : null}
-      </View>
+      <MaterialCommunityIcons name="archive-outline" size={20} color={c.muted} />
+      <Text style={{ flex: 1, color: c.text, fontSize: 15 }}>Archive</Text>
+      <Text style={{ color: c.muted, fontSize: 15, fontVariant: ["tabular-nums"] }}>{count}</Text>
+      <MaterialCommunityIcons name="chevron-right" size={20} color={c.muted} />
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  listHeader: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 10 },
-  row: { flexDirection: "row", paddingVertical: 14, paddingRight: 16, paddingLeft: 8, gap: 8 },
-  dot: { width: 8, height: 8, borderRadius: 4, marginTop: 7 },
-  rowTop: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
-  source: { fontSize: 13, flex: 1 },
-  time: { fontSize: 13 },
-  title: { fontSize: 16 },
-  body: { fontSize: 15, lineHeight: 21 },
-  badges: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
-  separator: { height: StyleSheet.hairlineWidth, marginLeft: 24 },
+  listHeader: { flexDirection: "row", alignItems: "center", gap: 20, paddingHorizontal: 16, paddingVertical: 10 },
+  headerAction: { fontSize: 14, fontWeight: "600" },
+  archiveLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    marginTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: 32, gap: 12 },
   emptyTitle: { fontSize: 18, fontWeight: "600", textAlign: "center" },
   emptyText: { fontSize: 15, lineHeight: 21, textAlign: "center", maxWidth: 320 },

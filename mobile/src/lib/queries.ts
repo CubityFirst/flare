@@ -22,6 +22,21 @@ export function useFeed() {
   });
 }
 
+/** Archived messages, newest first. */
+export function useArchive() {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: ARCHIVE,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) =>
+      api.get<FeedPage>(`/api/feed?archived=1&limit=30${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""}`),
+    getNextPageParam: (last) => last.nextCursor,
+  });
+}
+
+const FEED = ["feed"] as const;
+const ARCHIVE = ["feed", "archived"] as const;
+
 export function useFeedItem(id: string) {
   const api = useApi();
   const qc = useQueryClient();
@@ -30,25 +45,34 @@ export function useFeedItem(id: string) {
     queryFn: () => api.get<FeedItem>(`/api/feed/${encodeURIComponent(id)}`),
     // Show the copy from the feed list straight away, then refresh it.
     placeholderData: () =>
-      qc
-        .getQueryData<InfiniteData<FeedPage>>(["feed"])
-        ?.pages.flatMap((p) => p.items)
+      [FEED, ARCHIVE]
+        .flatMap((key) => qc.getQueryData<InfiniteData<FeedPage>>(key)?.pages.flatMap((p) => p.items) ?? [])
         .find((i) => i.id === id),
   });
 }
 
-/** Updates one item everywhere it's cached. */
-function patchItem(qc: ReturnType<typeof useQueryClient>, id: string, patch: (i: FeedItem) => FeedItem | null) {
-  qc.setQueryData<InfiniteData<FeedPage>>(["feed"], (data) =>
-    data && {
-      ...data,
-      pages: data.pages.map((p) => ({
-        ...p,
-        items: p.items.flatMap((i) => (i.id === id ? (patch(i) ?? []) : [i])),
-      })),
-    },
-  );
-  qc.setQueryData<FeedItem>(["feed", "item", id], (i) => (i ? (patch(i) ?? undefined) : i));
+/**
+ * Updates one item in the feed and archive lists. Returning null takes it out of the lists;
+ * the item's own detail query keeps it (with `archived` applied), so an open message stays put.
+ */
+function patchItem(
+  qc: ReturnType<typeof useQueryClient>,
+  id: string,
+  patch: (i: FeedItem) => FeedItem | null,
+  detail: (i: FeedItem) => FeedItem = (i) => patch(i) ?? i,
+) {
+  for (const key of [FEED, ARCHIVE]) {
+    qc.setQueryData<InfiniteData<FeedPage>>(key, (data) =>
+      data && {
+        ...data,
+        pages: data.pages.map((p) => ({
+          ...p,
+          items: p.items.flatMap((i) => (i.id === id ? (patch(i) ?? []) : [i])),
+        })),
+      },
+    );
+  }
+  qc.setQueryData<FeedItem>(["feed", "item", id], (i) => (i ? detail(i) : i));
 }
 
 export function useFeedActions() {
@@ -64,17 +88,41 @@ export function useFeedActions() {
     mutationFn: (id: string) => api.post(`/api/feed/${encodeURIComponent(id)}/unread`),
     onMutate: (id) => patchItem(qc, id, (i) => ({ ...i, readAt: null })),
   });
-  const remove = useMutation({
-    mutationFn: (id: string) => api.del(`/api/feed/${encodeURIComponent(id)}`),
-    onMutate: (id) => patchItem(qc, id, () => null),
+  // Archive and restore share a scope, so an Undo waits for the archive it reverses.
+  const archive = useMutation({
+    scope: { id: "feed-archive" },
+    mutationFn: (id: string) => api.post(`/api/feed/${encodeURIComponent(id)}/archive`),
+    onMutate: (id) =>
+      patchItem(qc, id, () => null, (i) => ({ ...i, archivedAt: Date.now(), readAt: i.readAt ?? Date.now() })),
+    onSettled: refresh,
   });
+  const restore = useMutation({
+    scope: { id: "feed-archive" },
+    mutationFn: (id: string) => api.post(`/api/feed/${encodeURIComponent(id)}/restore`),
+    onMutate: (id) => patchItem(qc, id, () => null, (i) => ({ ...i, archivedAt: null })),
+    onSettled: refresh,
+  });
+  const deleteForever = useMutation({
+    mutationFn: (id: string) => api.del(`/api/feed/archive/${encodeURIComponent(id)}`),
+    onMutate: (id) => patchItem(qc, id, () => null),
+    onSettled: refresh,
+  });
+  const emptyArchive = useMutation({
+    mutationFn: () => api.del("/api/feed/archive"),
+    onMutate: () =>
+      qc.setQueryData<InfiniteData<FeedPage>>(ARCHIVE, (data) =>
+        data && { ...data, pages: data.pages.map((p) => ({ ...p, items: [], archived: 0, nextCursor: null })) },
+      ),
+    onSettled: refresh,
+  });
+  const archiveRead = useMutation({ mutationFn: () => api.post("/api/feed/archive-read"), onSettled: refresh });
   const readAll = useMutation({ mutationFn: () => api.post("/api/feed/read-all"), onSettled: refresh });
   const acknowledge = useMutation({
     mutationFn: (receipt: string) => api.post(`/api/receipts/${encodeURIComponent(receipt)}/ack`),
     onSuccess: (_d, receipt) => FlarePush.dismissAlert(receipt),
     onSettled: refresh,
   });
-  return { markRead, markUnread, remove, readAll, acknowledge, refresh };
+  return { markRead, markUnread, archive, restore, deleteForever, emptyArchive, archiveRead, readAll, acknowledge, refresh };
 }
 
 /** Refreshes the feed whenever a push arrives while the app is open. */

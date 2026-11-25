@@ -87,6 +87,7 @@ interface FeedRow {
   message_id: string;
   created_at: number;
   read_at: number | null;
+  deleted_at: number | null;
   title: string | null;
   body: string;
   html: number;
@@ -128,6 +129,7 @@ function toFeedItem(r: FeedRow): FeedItem {
     groupName: r.group_name,
     createdAt: r.created_at,
     readAt: r.read_at,
+    archivedAt: r.deleted_at,
     receipt: r.r_id
       ? toReceipt({
           id: r.r_id,
@@ -150,7 +152,7 @@ function toFeedItem(r: FeedRow): FeedItem {
 }
 
 const FEED_SELECT = `
-  SELECT d.id, d.message_id, d.created_at, d.read_at,
+  SELECT d.id, d.message_id, d.created_at, d.read_at, d.deleted_at,
          m.title, m.body, m.html, m.priority, m.sound, m.sound_url, m.url, m.url_title, m.app_name,
          COALESCE(s.name, s.email) AS sender_name, g.name AS group_name,
          r.id AS r_id, r.retry_seconds AS r_retry_seconds, r.expire_at AS r_expire_at, r.created_at AS r_created_at,
@@ -164,10 +166,24 @@ const FEED_SELECT = `
   LEFT JOIN receipts r ON r.message_id = m.id
   LEFT JOIN users au ON au.id = r.acknowledged_by`;
 
+// Archiving sets deliveries.deleted_at: the message leaves the feed but stays listed under
+// ?archived=1 until the recipient restores it or deletes it for good.
+
+/** Hides messages whose ttl has passed, wherever the feed lists them. */
+const NOT_EXPIRED = "(m.expires_at IS NULL OR m.expires_at > ?)";
+
+/**
+ * True while an urgent alert is still repeating. Those can't be archived: the alarm would keep
+ * ringing with nothing left in the feed to acknowledge it from.
+ */
+const PENDING_URGENT = `EXISTS (SELECT 1 FROM receipts pr WHERE pr.message_id = deliveries.message_id
+  AND pr.acknowledged_at IS NULL AND pr.cancelled_at IS NULL AND pr.expired_at IS NULL AND pr.expire_at > ?)`;
+
 api.get("/feed", async (c) => {
   const user = c.get("user");
   const limit = Math.min(Math.max(Number(c.req.query("limit")) || 30, 1), 100);
   const unreadOnly = c.req.query("unread") === "1";
+  const archived = c.req.query("archived") === "1";
   const cursor = c.req.query("cursor");
   let [cTs, cId] = [Number.MAX_SAFE_INTEGER, "~"];
   if (cursor) {
@@ -178,7 +194,7 @@ api.get("/feed", async (c) => {
   const now = Date.now();
   const { results } = await c.env.DB.prepare(
     `${FEED_SELECT}
-     WHERE d.user_id = ? AND d.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
+     WHERE d.user_id = ? AND d.deleted_at IS ${archived ? "NOT NULL" : "NULL"} AND ${NOT_EXPIRED}
        ${unreadOnly ? "AND d.read_at IS NULL" : ""}
        AND (d.created_at < ? OR (d.created_at = ? AND d.id < ?))
      ORDER BY d.created_at DESC, d.id DESC LIMIT ?`,
@@ -186,34 +202,54 @@ api.get("/feed", async (c) => {
     .bind(user.id, now, cTs, cTs, cId, limit + 1)
     .all<FeedRow>();
 
-  const unread = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
-     WHERE d.user_id = ? AND d.deleted_at IS NULL AND d.read_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)`,
+  const counts = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(d.deleted_at IS NULL AND d.read_at IS NULL), 0) AS unread,
+            COALESCE(SUM(d.deleted_at IS NOT NULL), 0) AS archived
+     FROM deliveries d JOIN messages m ON m.id = d.message_id
+     WHERE d.user_id = ? AND ${NOT_EXPIRED}`,
   )
     .bind(user.id, now)
-    .first<{ n: number }>();
+    .first<{ unread: number; archived: number }>();
 
   const page = results.slice(0, limit);
   const last = page.at(-1);
   return c.json<FeedPage>({
     items: page.map(toFeedItem),
     nextCursor: results.length > limit && last ? `${last.created_at}_${last.id}` : null,
-    unread: unread?.n ?? 0,
+    unread: counts?.unread ?? 0,
+    archived: counts?.archived ?? 0,
   });
 });
 
 api.get("/feed/count", async (c) => {
   const row = await c.env.DB.prepare(
     `SELECT COUNT(*) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
-     WHERE d.user_id = ? AND d.deleted_at IS NULL AND d.read_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)`,
+     WHERE d.user_id = ? AND d.deleted_at IS NULL AND d.read_at IS NULL AND ${NOT_EXPIRED}`,
   )
     .bind(c.get("user").id, Date.now())
     .first<{ n: number }>();
   return c.json({ unread: row?.n ?? 0 });
 });
 
+/** Permanently deletes everything in the archive. */
+api.delete("/feed/archive", async (c) => {
+  await c.env.DB.prepare("DELETE FROM deliveries WHERE user_id = ? AND deleted_at IS NOT NULL")
+    .bind(c.get("user").id)
+    .run();
+  return c.json({ ok: true });
+});
+
+/** Permanently deletes one archived message. Only archived messages can be deleted. */
+api.delete("/feed/archive/:id", async (c) => {
+  const res = await c.env.DB.prepare("DELETE FROM deliveries WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL")
+    .bind(c.req.param("id"), c.get("user").id)
+    .run();
+  if (!res.meta.changes) fail(404, "Not in your archive");
+  return c.json({ ok: true });
+});
+
 api.get("/feed/:id", async (c) => {
-  const row = await c.env.DB.prepare(`${FEED_SELECT} WHERE d.id = ? AND d.user_id = ? AND d.deleted_at IS NULL`)
+  const row = await c.env.DB.prepare(`${FEED_SELECT} WHERE d.id = ? AND d.user_id = ?`)
     .bind(c.req.param("id"), c.get("user").id)
     .first<FeedRow>();
   if (!row) fail(404, "Not found");
@@ -241,22 +277,49 @@ api.post("/feed/read-all", async (c) => {
   return c.json({ ok: true });
 });
 
-api.delete("/feed/:id", async (c) => {
-  await c.env.DB.prepare("UPDATE deliveries SET deleted_at = ? WHERE id = ? AND user_id = ?")
-    .bind(Date.now(), c.req.param("id"), c.get("user").id)
+/** Moves a message to the archive, marking it read. */
+async function archiveItem(c: Ctx) {
+  const now = Date.now();
+  const res = await c.env.DB.prepare(
+    `UPDATE deliveries SET deleted_at = COALESCE(deleted_at, ?), read_at = COALESCE(read_at, ?)
+     WHERE id = ? AND user_id = ? AND NOT ${PENDING_URGENT}`,
+  )
+    .bind(now, now, c.req.param("id"), c.get("user").id, now)
+    .run();
+  if (!res.meta.changes) {
+    const exists = await c.env.DB.prepare("SELECT 1 FROM deliveries WHERE id = ? AND user_id = ?")
+      .bind(c.req.param("id"), c.get("user").id)
+      .first();
+    fail(exists ? 409 : 404, exists ? "Acknowledge this urgent alert before archiving it" : "Not found");
+  }
+  return c.json({ ok: true });
+}
+
+api.post("/feed/:id/archive", archiveItem);
+// Older app and PWA builds "delete" with this; it has always only hidden the message.
+api.delete("/feed/:id", archiveItem);
+
+api.post("/feed/:id/restore", async (c) => {
+  await c.env.DB.prepare("UPDATE deliveries SET deleted_at = NULL WHERE id = ? AND user_id = ?")
+    .bind(c.req.param("id"), c.get("user").id)
     .run();
   return c.json({ ok: true });
 });
 
-/** Removes every read message from the feed. */
-api.post("/feed/clear-read", async (c) => {
+/** Archives every read message, except urgent alerts that are still repeating. */
+async function archiveRead(c: Ctx) {
+  const now = Date.now();
   await c.env.DB.prepare(
-    "UPDATE deliveries SET deleted_at = ? WHERE user_id = ? AND read_at IS NOT NULL AND deleted_at IS NULL",
+    `UPDATE deliveries SET deleted_at = ?
+     WHERE user_id = ? AND read_at IS NOT NULL AND deleted_at IS NULL AND NOT ${PENDING_URGENT}`,
   )
-    .bind(Date.now(), c.get("user").id)
+    .bind(now, c.get("user").id, now)
     .run();
   return c.json({ ok: true });
-});
+}
+
+api.post("/feed/archive-read", archiveRead);
+api.post("/feed/clear-read", archiveRead); // older clients
 
 api.post("/receipts/:id/ack", async (c) => {
   const ok = await acknowledgeReceipt(c.env, c.executionCtx as ExecutionContext, c.req.param("id"), c.get("user").id);

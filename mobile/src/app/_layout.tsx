@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useState } from "react";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SnackbarProvider } from "../components/snackbar";
 import { ApiError } from "../lib/api";
 import { SessionProvider, useSession } from "../lib/session";
 import { useColors } from "../lib/theme";
@@ -20,11 +22,15 @@ export default function RootLayout() {
       }),
   );
   return (
-    <QueryClientProvider client={queryClient}>
-      <SessionProvider>
-        <Navigator />
-      </SessionProvider>
-    </QueryClientProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <QueryClientProvider client={queryClient}>
+        <SessionProvider>
+          <SnackbarProvider>
+            <Navigator />
+          </SnackbarProvider>
+        </SessionProvider>
+      </QueryClientProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -45,6 +51,7 @@ function Navigator() {
         <Stack.Protected guard={Boolean(api)}>
           <Stack.Screen name="index" options={{ title: "Flare" }} />
           <Stack.Screen name="item/[id]" options={{ title: "" }} />
+          <Stack.Screen name="archive" options={{ title: "Archive" }} />
           <Stack.Screen name="settings" options={{ title: "Settings" }} />
         </Stack.Protected>
         <Stack.Protected guard={!api}>
